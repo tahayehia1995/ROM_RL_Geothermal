@@ -20,8 +20,8 @@ data_preprocessing:
       POROS: minmax
     timeseries_datasets:
       BHP: minmax
-      GASRATSC: minmax
-      WATRATSC: minmax
+      ENERGYRATE: minmax
+      WATRATRC: minmax
   validation:
     check_file_integrity: true
     check_data_shapes: true
@@ -37,7 +37,7 @@ data_preprocessing:
     verbose: true
     show_progress: true
 model:
-  latent_dim: 32
+  latent_dim: 128
   u_dim: 6
   n_channels: 2
   method: E2C
@@ -205,15 +205,16 @@ decoder:
 transition:
   type: linear
   encoder_hidden_dims:
-  - 200
-  - 200
+  - 300
+  - 300
+  - 300
   fno:
-    width: 64
-    modes_x: 8
-    modes_y: 8
-    modes_z: 4
-    n_layers: 4
-    control_injection: spatial_encoding
+    width: 32
+    modes_x: 12
+    modes_y: 6
+    modes_z: 6
+    n_layers: 3
+    control_injection: well_specific_spatial
     well_specific_spatial:
       influence_radius: 3.0
       influence_function: gaussian
@@ -235,13 +236,13 @@ transition:
     predict_mode: fno_only
 training:
   epoch: 200
-  batch_size: 64
+  batch_size: 32
   learning_rate: 0.0001
   nsteps: 2
-  num_tsteps: 30
+  num_tsteps: 29
 learning_rate_scheduler:
-  enable: false
-  type: constant
+  enable: true
+  type: step_decay
   reduce_on_plateau:
     mode: min
     factor: 0.5
@@ -255,7 +256,7 @@ learning_rate_scheduler:
   exponential_decay:
     gamma: 0.95
   step_decay:
-    step_size: 100
+    step_size: 50
     gamma: 0.5
   cosine_annealing:
     T_max: 20
@@ -337,7 +338,7 @@ dynamic_loss_weighting:
     adaptation_rate: 0.1
 adversarial:
   enable: false
-  discriminator_learning_rate: 0.0001
+  discriminator_learning_rate: 1.0e-05
   discriminator_update_frequency: 1
 discriminator:
   enable: false
@@ -397,7 +398,7 @@ discriminator:
   update_ratio: 1
   label_smoothing: 0.1
 testing:
-  num_tsteps: 30
+  num_tsteps: 29
   test_batch_size: 16
   visualization:
     default_layer: null

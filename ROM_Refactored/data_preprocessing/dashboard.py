@@ -586,12 +586,12 @@ class DataPreprocessingDashboard:
             for well_idx in range(num_wells):
                 # Set default selections based on requested logic:
                 # - BHP: last 3 wells should be checked
-                # - GASRATSC: first 3 wells should be checked
-                # - WATRATSC: no wells should be checked
+                # - ENERGYRATE: first 3 wells should be checked
+                # - WATRATRC: no wells should be checked
                 default_selected = False
                 if var_name == 'BHP' and well_idx >= max(0, num_wells - 3):  # BHP last 3 wells
                     default_selected = True
-                elif var_name == 'GASRATSC' and well_idx < 3:  # GASRATSC first 3 wells
+                elif var_name == 'ENERGYRATE' and well_idx < 3:  # ENERGYRATE first 3 wells
                     default_selected = True
                 
                 checkbox = widgets.Checkbox(
@@ -668,13 +668,13 @@ class DataPreprocessingDashboard:
             
             for well_idx in range(num_wells):
                 # Set default selections for observations
-                # Keeping BHP for first 3 wells (injectors), and GASRATSC and WATRATSC for last 3 wells (producers)
+                # Keeping BHP for first 3 wells (injectors), and ENERGYRATE and WATRATRC for last 3 wells (producers)
                 default_selected = False
                 if var_name == 'BHP' and well_idx < 3:  # Injector BHP (first 3 wells)
                     default_selected = True
-                elif var_name == 'WATRATSC' and well_idx >= max(0, num_wells - 3):  # Water production (last 3 wells)
+                elif var_name == 'WATRATRC' and well_idx >= max(0, num_wells - 3):  # Water production (last 3 wells)
                     default_selected = True
-                elif var_name == 'GASRATSC' and well_idx >= max(0, num_wells - 3):  # Gas production (last 3 wells)
+                elif var_name == 'ENERGYRATE' and well_idx >= max(0, num_wells - 3):  # Energy production (last 3 wells)
                     default_selected = True
                 
                 checkbox = widgets.Checkbox(
@@ -2310,6 +2310,27 @@ def load_processed_data(filepath=None, data_dir='./processed_data/', n_channels=
                 norm_group = hf['normalization']
                 if 'params_json' in norm_group.attrs:
                     norm_params = json.loads(norm_group.attrs['params_json'])
+                    # Convert string numeric values to floats (fixes JSON serialization issues)
+                    def _convert_strings_to_numbers(params_dict):
+                        """Convert string numeric values to floats"""
+                        converted_params = {}
+                        for key, value in params_dict.items():
+                            if isinstance(value, str):
+                                try:
+                                    converted_params[key] = float(value)
+                                except (ValueError, TypeError):
+                                    converted_params[key] = value
+                            elif isinstance(value, dict):
+                                converted_params[key] = _convert_strings_to_numbers(value)
+                            else:
+                                converted_params[key] = value
+                        return converted_params
+                    
+                    # Apply conversion to all parameters
+                    for key, value in norm_params.items():
+                        if isinstance(value, dict):
+                            norm_params[key] = _convert_strings_to_numbers(value)
+                    
                     # Convert lists back to numpy arrays where appropriate
                     for key, value in norm_params.items():
                         if isinstance(value, dict):

@@ -106,7 +106,7 @@ class CustomizedLoss(nn.Module):
             # Observation normalization: num_observations × num_timesteps
             num_prod = config['data']['num_prod']
             num_inj = config['data']['num_inj']
-            num_timesteps = config['training']['num_tsteps']  # FIXED: Use full episode length (30) not training steps (2)
+            num_timesteps = config['training']['num_tsteps']  # FIXED: Use full episode length (29) not training steps (2)
             self.observation_normalization_factor = (num_prod * 2 + num_inj) * num_timesteps  # BHP + 2 rates per producer + 1 rate per injector
         else:
             # No normalization - set factors to 1

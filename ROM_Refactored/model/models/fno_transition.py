@@ -581,7 +581,7 @@ class FNOTransitionModel(nn.Module):
             well_obs = self.well_embeddings['injection'](well_features)  # Should output 1 value per injector
             well_observations.append(well_obs[:, i:i+1])  # Take only the i-th output for this well
         
-        # Extract producer observations (BHP + water rate + gas rate at producer locations)
+        # Extract producer observations (BHP + water rate + energy rate at producer locations)
         for i, well_loc in enumerate(self.well_locations_producers):
             well_x, well_y, well_z = well_loc[0].item(), well_loc[1].item(), well_loc[2].item()
             

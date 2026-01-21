@@ -202,78 +202,109 @@ class TestingDashboard:
         """
         Parse model filename to extract hyperparameters.
         
-        Supports two formats:
-        1. Grid search: e2co_{component}_grid_bs{batch_size}_ld{latent_dim}_ns{n_steps}_run{run_id}_bs{batch_size}_ld{latent_dim}_ns{n_steps}.h5
-        2. Standard: e2co_{component}_3D_native_nt{num_train}_l{latent_dim}_lr{lr}_ep{epoch}_steps{nsteps}_channels{n_channels}_wells{num_well}.h5
-        
         Args:
-            filename: Model filename
+            filename: Model filename (e.g., 'e2co_encoder_grid_bs8_ld128_ns2_ch2_run0001_bs8_ld128_ns2_ch2_schfix_rb3_ehd300-300_dlwFalse_advFalse_bs8_ld128_ns2_ch2.h5')
             
         Returns:
-            Dict with batch_size, latent_dim, n_steps, run_id, component, or None if parsing fails
+            Dict with component, batch_size, latent_dim, n_steps, n_channels, run_id, 
+            residual_blocks (if present), encoder_hidden_dims (if present), or None if parsing fails
         """
         try:
-            # Pattern 1: Grid search format
-            # e2co_{component}_grid_bs{batch_size}_ld{latent_dim}_ns{n_steps}_run{run_id}_bs{batch_size}_ld{latent_dim}_ns{n_steps}.h5
-            grid_pattern = r'e2co_(encoder|decoder|transition)_grid_bs(\d+)_ld(\d+)_ns(\d+)_run(\d+)_bs\d+_ld\d+_ns\d+\.h5'
-            match = re.match(grid_pattern, filename)
+            # Pattern structure: e2co_{component}_grid_bs{bs}_ld{ld}_ns{ns}_ch?{ch}?_run{run}_..._bs{bs}_ld{ld}_ns{ns}_ch?{ch}?.h5
+            # The run_id can contain variable content like: sch{scheduler}_rb{blocks}_ehd{dims}_dlw{method}_adv{enable}
+            # We need to match from run{number} until the final bs{bs}_ld{ld}_ns{ns}_ch?{ch}? pattern
+            
+            # More flexible pattern that handles variable content in run_id
+            # Captures: component, bs1, ld1, ns1, ch1 (optional), run_number, variable run_id content, bs2, ld2, ns2, ch2 (optional)
+            pattern = r'e2co_(encoder|decoder|transition)_grid_bs(\d+)_ld(\d+)_ns(\d+)(?:_ch(\d+))?_run(\d+)((?:_[^_]+)*)_bs(\d+)_ld(\d+)_ns(\d+)(?:_ch(\d+))?\.h5'
+            match = re.match(pattern, filename)
             
             if match:
                 component = match.group(1)
                 batch_size = int(match.group(2))
                 latent_dim = int(match.group(3))
                 n_steps = int(match.group(4))
-                run_id = match.group(5)
+                n_channels_first = match.group(5)  # May be None
+                run_number = match.group(6)
+                run_id_content = match.group(7)  # Variable content between run number and final base params
+                batch_size_final = int(match.group(8))
+                latent_dim_final = int(match.group(9))
+                n_steps_final = int(match.group(10))
+                n_channels_final = match.group(11)  # May be None
+                
+                # Verify consistency (first and final base params should match)
+                if (batch_size != batch_size_final or 
+                    latent_dim != latent_dim_final or 
+                    n_steps != n_steps_final):
+                    # If inconsistent, try to use final values as they're more reliable
+                    batch_size = batch_size_final
+                    latent_dim = latent_dim_final
+                    n_steps = n_steps_final
+                
+                # Extract n_channels (prefer final occurrence, fallback to first)
+                n_channels = None
+                if n_channels_final:
+                    n_channels = int(n_channels_final)
+                elif n_channels_first:
+                    n_channels = int(n_channels_first)
+                
+                # Extract residual_blocks from run_id_content (pattern: _rb{number})
+                residual_blocks = None
+                rb_match = re.search(r'_rb(\d+)', run_id_content)
+                if rb_match:
+                    residual_blocks = int(rb_match.group(1))
+                
+                # Extract encoder_hidden_dims from run_id_content (pattern: _ehd{dim1}-{dim2}-...)
+                encoder_hidden_dims = None
+                ehd_match = re.search(r'_ehd([\d-]+)', run_id_content)
+                if ehd_match:
+                    ehd_str = ehd_match.group(1)
+                    # Parse dimensions separated by hyphens (e.g., "300-300" or "200-200-200")
+                    try:
+                        encoder_hidden_dims = [int(dim) for dim in ehd_str.split('-')]
+                    except ValueError:
+                        encoder_hidden_dims = None
+                
+                # Construct full run_id: run{number}{content}
+                full_run_id = f"run{run_number}{run_id_content}"
+                
+                result = {
+                    'component': component,
+                    'batch_size': batch_size,
+                    'latent_dim': latent_dim,
+                    'n_steps': n_steps,
+                    'n_channels': n_channels,  # May be None if not present
+                    'run_id': full_run_id,
+                    'run_number': run_number  # Keep run number separately for grouping
+                }
+                
+                # Add architecture parameters if found
+                if residual_blocks is not None:
+                    result['residual_blocks'] = residual_blocks
+                if encoder_hidden_dims is not None:
+                    result['encoder_hidden_dims'] = encoder_hidden_dims
+                
+                return result
+            
+            # Fallback: try simpler pattern for older filenames without channels
+            pattern_simple = r'e2co_(encoder|decoder|transition)_grid_bs(\d+)_ld(\d+)_ns(\d+)_run(\d+)(?:_[^_]+)*\.h5'
+            match_simple = re.match(pattern_simple, filename)
+            
+            if match_simple:
+                component = match_simple.group(1)
+                batch_size = int(match_simple.group(2))
+                latent_dim = int(match_simple.group(3))
+                n_steps = int(match_simple.group(4))
+                run_number = match_simple.group(5)
                 
                 return {
                     'component': component,
                     'batch_size': batch_size,
                     'latent_dim': latent_dim,
                     'n_steps': n_steps,
-                    'run_id': run_id,
-                    'format': 'grid'
-                }
-            
-            # Pattern 2: Standard format
-            # e2co_{component}_3D_native_nt{num_train}_l{latent_dim}_lr{lr}_ep{epoch}_steps{nsteps}_channels{n_channels}_wells{num_well}.h5
-            standard_pattern = r'e2co_(encoder|decoder|transition)_3D_native_nt(\d+)_l(\d+)_lr([\de\-\.]+)_ep(\d+)_steps(\d+)_channels(\d+)_wells(\d+)\.h5'
-            match = re.match(standard_pattern, filename)
-            
-            if match:
-                component = match.group(1)
-                num_train = int(match.group(2))
-                latent_dim = int(match.group(3))
-                learning_rate = match.group(4)
-                epoch = int(match.group(5))
-                n_steps = int(match.group(6))
-                n_channels = int(match.group(7))
-                num_well = int(match.group(8))
-                
-                # Create a synthetic run_id based on filename for grouping
-                # Extract the base pattern (everything except component name) for consistent grouping
-                # For standard format, models with same hyperparameters should have same run_id
-                # Use the unique part of filename: 3D_native_nt{num_train}_l{latent_dim}_lr{lr}_ep{epoch}_steps{nsteps}_channels{n_channels}_wells{num_well}
-                base_pattern = f"nt{num_train}_l{latent_dim}_lr{learning_rate}_ep{epoch}_steps{n_steps}_channels{n_channels}_wells{num_well}"
-                # Create a simple hash from the base pattern for consistent grouping
-                # Use a deterministic hash function
-                import hashlib
-                pattern_hash = int(hashlib.md5(base_pattern.encode()).hexdigest(), 16) % 10000
-                run_id = f"std_{pattern_hash:04d}"
-                
-                # For standard format, we don't have batch_size in filename, use None or extract from config if needed
-                # We'll use a default or extract it later if needed
-                return {
-                    'component': component,
-                    'batch_size': None,  # Not in filename for standard format
-                    'latent_dim': latent_dim,
-                    'n_steps': n_steps,
-                    'run_id': run_id,
-                    'format': 'standard',
-                    'num_train': num_train,
-                    'epoch': epoch,
-                    'n_channels': n_channels,
-                    'num_well': num_well,
-                    'learning_rate': learning_rate
+                    'n_channels': None,
+                    'run_id': f"run{run_number}",
+                    'run_number': run_number
                 }
             
             return None
@@ -284,38 +315,19 @@ class TestingDashboard:
         """
         Scan saved_models directory for available model files.
         
-        Supports both grid search format (e2co_encoder_grid_*.h5) and standard format (e2co_encoder_*.h5).
-        
         Args:
             model_dir: Directory to scan for model files
             
         Returns:
-            List of model sets, each containing encoder, decoder, transition files with matching hyperparameters
+            List of model sets, each containing encoder, decoder, and optionally transition files with matching hyperparameters
         """
         if not os.path.exists(model_dir):
             return []
         
-        # Find all model files matching both patterns
-        # Pattern 1: Grid search format
-        encoder_files_grid = glob.glob(os.path.join(model_dir, 'e2co_encoder_grid_*.h5'))
-        decoder_files_grid = glob.glob(os.path.join(model_dir, 'e2co_decoder_grid_*.h5'))
-        transition_files_grid = glob.glob(os.path.join(model_dir, 'e2co_transition_grid_*.h5'))
-        
-        # Pattern 2: Standard format (exclude grid pattern to avoid duplicates)
-        # Use a more specific pattern to avoid matching grid files
-        encoder_files_std = glob.glob(os.path.join(model_dir, 'e2co_encoder_*.h5'))
-        decoder_files_std = glob.glob(os.path.join(model_dir, 'e2co_decoder_*.h5'))
-        transition_files_std = glob.glob(os.path.join(model_dir, 'e2co_transition_*.h5'))
-        
-        # Filter out grid files from standard lists
-        encoder_files_std = [f for f in encoder_files_std if 'grid' not in os.path.basename(f)]
-        decoder_files_std = [f for f in decoder_files_std if 'grid' not in os.path.basename(f)]
-        transition_files_std = [f for f in transition_files_std if 'grid' not in os.path.basename(f)]
-        
-        # Combine both patterns
-        encoder_files = encoder_files_grid + encoder_files_std
-        decoder_files = decoder_files_grid + decoder_files_std
-        transition_files = transition_files_grid + transition_files_std
+        # Find all model files matching pattern
+        encoder_files = glob.glob(os.path.join(model_dir, 'e2co_encoder_grid_*.h5'))
+        decoder_files = glob.glob(os.path.join(model_dir, 'e2co_decoder_grid_*.h5'))
+        transition_files = glob.glob(os.path.join(model_dir, 'e2co_transition_grid_*.h5'))
         
         # Also check grid_search subdirectory
         grid_search_dir = os.path.join(model_dir, 'grid_search')
@@ -324,52 +336,40 @@ class TestingDashboard:
             decoder_files.extend(glob.glob(os.path.join(grid_search_dir, 'e2co_decoder_grid_*.h5')))
             transition_files.extend(glob.glob(os.path.join(grid_search_dir, 'e2co_transition_grid_*.h5')))
         
-        # Group models by composite key
-        # For grid format: (run_id, batch_size, latent_dim, n_steps)
-        # For standard format: (run_id, latent_dim, n_steps) - using synthetic run_id from filename
+        # Group models by composite key: (run_id, batch_size, latent_dim, n_steps, n_channels)
+        # This ensures models with same run_id but different hyperparameters are treated separately
+        # Include n_channels in key to distinguish models with different channel counts
         model_sets = {}
         
         for encoder_file in encoder_files:
             filename = os.path.basename(encoder_file)
             parsed = self._parse_model_filename(filename)
             if parsed:
-                # Create model key based on format
-                if parsed['format'] == 'grid':
-                    model_key = (parsed['run_id'], parsed['batch_size'], parsed['latent_dim'], parsed['n_steps'])
-                else:  # standard format
-                    # For standard format, use run_id (which is synthetic but consistent for same base pattern)
-                    # and include other identifying info
-                    model_key = (parsed['run_id'], parsed['latent_dim'], parsed['n_steps'], parsed.get('n_channels'))
-                
+                # Use composite key to uniquely identify each model set
+                # Include n_channels (use None as placeholder if not present) to distinguish models
+                n_channels = parsed.get('n_channels')
+                model_key = (parsed['run_id'], parsed['batch_size'], parsed['latent_dim'], parsed['n_steps'], n_channels)
                 if model_key not in model_sets:
                     model_sets[model_key] = {
                         'run_id': parsed['run_id'],
-                        'batch_size': parsed.get('batch_size'),  # May be None for standard format
+                        'batch_size': parsed['batch_size'],
                         'latent_dim': parsed['latent_dim'],
                         'n_steps': parsed['n_steps'],
-                        'format': parsed['format'],
+                        'n_channels': n_channels,
+                        'residual_blocks': parsed.get('residual_blocks'),
+                        'encoder_hidden_dims': parsed.get('encoder_hidden_dims'),
                         'encoder': None,
                         'decoder': None,
                         'transition': None
                     }
-                    # Add standard format specific fields if present
-                    if parsed['format'] == 'standard':
-                        model_sets[model_key]['n_channels'] = parsed.get('n_channels')
-                        model_sets[model_key]['num_train'] = parsed.get('num_train')
-                        model_sets[model_key]['epoch'] = parsed.get('epoch')
-                        model_sets[model_key]['num_well'] = parsed.get('num_well')
-                
                 model_sets[model_key]['encoder'] = encoder_file
         
         for decoder_file in decoder_files:
             filename = os.path.basename(decoder_file)
             parsed = self._parse_model_filename(filename)
             if parsed:
-                if parsed['format'] == 'grid':
-                    model_key = (parsed['run_id'], parsed['batch_size'], parsed['latent_dim'], parsed['n_steps'])
-                else:  # standard format
-                    model_key = (parsed['run_id'], parsed['latent_dim'], parsed['n_steps'], parsed.get('n_channels'))
-                
+                n_channels = parsed.get('n_channels')
+                model_key = (parsed['run_id'], parsed['batch_size'], parsed['latent_dim'], parsed['n_steps'], n_channels)
                 if model_key in model_sets:
                     model_sets[model_key]['decoder'] = decoder_file
         
@@ -377,27 +377,25 @@ class TestingDashboard:
             filename = os.path.basename(transition_file)
             parsed = self._parse_model_filename(filename)
             if parsed:
-                if parsed['format'] == 'grid':
-                    model_key = (parsed['run_id'], parsed['batch_size'], parsed['latent_dim'], parsed['n_steps'])
-                else:  # standard format
-                    model_key = (parsed['run_id'], parsed['latent_dim'], parsed['n_steps'], parsed.get('n_channels'))
-                
+                n_channels = parsed.get('n_channels')
+                model_key = (parsed['run_id'], parsed['batch_size'], parsed['latent_dim'], parsed['n_steps'], n_channels)
                 if model_key in model_sets:
                     model_sets[model_key]['transition'] = transition_file
         
-        # Filter to only complete sets (all three components)
+        # Filter to sets with at least encoder and decoder (transition is optional)
         complete_sets = []
         for model_key, model_set in model_sets.items():
-            if model_set['encoder'] and model_set['decoder'] and model_set['transition']:
+            if model_set['encoder'] and model_set['decoder']:
                 complete_sets.append(model_set)
         
-        # Sort by format, then run_id, then other parameters
-        def sort_key(x):
-            format_priority = 0 if x['format'] == 'grid' else 1
-            batch_size = x['batch_size'] if x['batch_size'] is not None else 0
-            return (format_priority, x['run_id'], batch_size, x['latent_dim'], x['n_steps'])
-        
-        complete_sets.sort(key=sort_key)
+        # Sort by run_id, then batch_size, latent_dim, n_steps, n_channels
+        complete_sets.sort(key=lambda x: (
+            x.get('run_id', ''),
+            x.get('batch_size', 0),
+            x.get('latent_dim', 0),
+            x.get('n_steps', 0),
+            x.get('n_channels') if x.get('n_channels') is not None else 0
+        ))
         
         return complete_sets
     
@@ -415,43 +413,28 @@ class TestingDashboard:
                     # Create dropdown options
                     options = []
                     for model_set in self.available_models:
-                        if model_set['format'] == 'grid':
-                            label = (f"Grid: Run {model_set['run_id']} | "
-                                    f"bs={model_set['batch_size']}, "
-                                    f"ld={model_set['latent_dim']}, "
-                                    f"ns={model_set['n_steps']}")
-                        else:  # standard format
-                            batch_info = f"bs={model_set['batch_size']}, " if model_set['batch_size'] else ""
-                            channels_info = f"ch={model_set.get('n_channels', '?')}, " if 'n_channels' in model_set else ""
-                            label = (f"Standard: {model_set['run_id']} | "
-                                    f"{batch_info}"
-                                    f"ld={model_set['latent_dim']}, "
-                                    f"ns={model_set['n_steps']}, "
-                                    f"{channels_info}"
-                                    f"ep={model_set.get('epoch', '?')}")
+                        n_channels_str = f", ch={model_set['n_channels']}" if model_set.get('n_channels') is not None else ""
+                        label = (f"Run {model_set['run_id']} | "
+                                f"bs={model_set['batch_size']}, "
+                                f"ld={model_set['latent_dim']}, "
+                                f"ns={model_set['n_steps']}{n_channels_str}")
                         options.append((label, model_set))
                     
                     self.model_selection.options = options
                     if options:
                         self.model_selection.value = options[0][1]  # Select first model
                     
-                    print(f"✅ Found {len(self.available_models)} complete model set(s)")
+                    print(f"✅ Found {len(self.available_models)} model set(s)")
                     for model_set in self.available_models:
-                        if model_set['format'] == 'grid':
-                            print(f"   Grid Run {model_set['run_id']}: bs={model_set['batch_size']}, "
-                                  f"ld={model_set['latent_dim']}, ns={model_set['n_steps']}")
-                        else:  # standard format
-                            batch_info = f"bs={model_set['batch_size']}, " if model_set['batch_size'] else ""
-                            channels_info = f"ch={model_set.get('n_channels', '?')}, " if 'n_channels' in model_set else ""
-                            print(f"   Standard {model_set['run_id']}: {batch_info}"
-                                  f"ld={model_set['latent_dim']}, ns={model_set['n_steps']}, "
-                                  f"{channels_info}ep={model_set.get('epoch', '?')}")
+                        transition_status = "✓" if model_set.get('transition') else "⚠️ (missing)"
+                        n_channels_str = f", ch={model_set['n_channels']}" if model_set.get('n_channels') is not None else ""
+                        print(f"   Run {model_set['run_id']}: bs={model_set['batch_size']}, "
+                              f"ld={model_set['latent_dim']}, ns={model_set['n_steps']}{n_channels_str}, transition={transition_status}")
                 else:
                     self.model_selection.options = [("No models found", None)]
-                    print(f"⚠️ No complete model sets found in {model_dir}")
-                    print(f"   Looking for:")
-                    print(f"   - Grid search: e2co_encoder_grid_*.h5, e2co_decoder_grid_*.h5, e2co_transition_grid_*.h5")
-                    print(f"   - Standard: e2co_encoder_*.h5, e2co_decoder_*.h5, e2co_transition_*.h5 (excluding grid)")
+                    print(f"⚠️ No model sets found in {model_dir}")
+                    print(f"   Looking for: e2co_encoder_grid_*.h5, e2co_decoder_grid_*.h5")
+                    print(f"   (e2co_transition_grid_*.h5 is optional)")
                     
             except Exception as e:
                 print(f"❌ Error scanning models: {e}")
@@ -551,9 +534,7 @@ class TestingDashboard:
             # Update basic parameters - use actual values from weights
             config.set('model.latent_dim', latent_dim_actual)
             config.set('training.nsteps', model_info['n_steps'])
-            # Only update batch_size if it's available (grid format has it, standard format doesn't)
-            if model_info.get('batch_size') is not None:
-                config.set('training.batch_size', model_info['batch_size'])
+            config.set('training.batch_size', model_info['batch_size'])
             
             # Update n_channels related config if extracted
             if n_channels is not None:
@@ -588,6 +569,20 @@ class TestingDashboard:
                                 # Update output channels to n_channels
                                 final_conv[1] = n_channels
             
+            # Update residual_blocks if present in model_info
+            if 'residual_blocks' in model_info:
+                if 'encoder' not in config.config:
+                    config.config['encoder'] = {}
+                config.config['encoder']['residual_blocks'] = model_info['residual_blocks']
+                print(f"   encoder.residual_blocks: {model_info['residual_blocks']}")
+            
+            # Update encoder_hidden_dims if present in model_info
+            if 'encoder_hidden_dims' in model_info:
+                if 'transition' not in config.config:
+                    config.config['transition'] = {}
+                config.config['transition']['encoder_hidden_dims'] = model_info['encoder_hidden_dims']
+                print(f"   transition.encoder_hidden_dims: {model_info['encoder_hidden_dims']}")
+            
             # Save config back to file
             with open(config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(config.config, f, default_flow_style=False, indent=2, allow_unicode=True, sort_keys=False)
@@ -598,8 +593,7 @@ class TestingDashboard:
             print(f"✅ Config updated:")
             print(f"   model.latent_dim: {latent_dim_actual}")
             print(f"   training.nsteps: {model_info['n_steps']}")
-            if model_info.get('batch_size') is not None:
-                print(f"   training.batch_size: {model_info['batch_size']}")
+            print(f"   training.batch_size: {model_info['batch_size']}")
             if encoder_file and n_channels is not None:
                 print(f"   model.n_channels: {n_channels}")
                 print(f"   data.input_shape[0]: {n_channels}")
@@ -748,19 +742,31 @@ class TestingDashboard:
                 print(f"📦 Loading model weights...")
                 print(f"   Encoder: {os.path.basename(selected_model['encoder'])}")
                 print(f"   Decoder: {os.path.basename(selected_model['decoder'])}")
-                print(f"   Transition: {os.path.basename(selected_model['transition'])}")
+                
+                transition_file = selected_model.get('transition')
+                if transition_file:
+                    print(f"   Transition: {os.path.basename(transition_file)}")
+                else:
+                    print(f"   Transition: ⚠️ Not found (will use randomly initialized transition model)")
                 
                 # Load weights using the model's load_weights_from_file method
                 try:
-                    self.my_rom.model.load_weights_from_file(
-                        selected_model['encoder'],
-                        selected_model['decoder'],
-                        selected_model['transition']
-                    )
+                    device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
+                    
+                    # Load encoder and decoder weights
+                    self.my_rom.model.encoder.load_state_dict(torch.load(selected_model['encoder'], map_location=device))
+                    self.my_rom.model.decoder.load_state_dict(torch.load(selected_model['decoder'], map_location=device))
+                    
+                    # Load transition weights if available
+                    if transition_file and os.path.exists(transition_file):
+                        self.my_rom.model.transition.load_state_dict(torch.load(transition_file, map_location=device))
+                    else:
+                        print("   ⚠️ Transition model weights not found - using randomly initialized transition model")
+                    
                     print("✅ Model loaded successfully!")
                     print(f"   Run ID: {selected_model['run_id']}")
-                    batch_info = f"Batch size: {selected_model['batch_size']}, " if selected_model.get('batch_size') is not None else ""
-                    print(f"   {batch_info}Latent dim: {latent_dim_from_weights}, "
+                    print(f"   Batch size: {selected_model['batch_size']}, "
+                          f"Latent dim: {latent_dim_from_weights}, "
                           f"N-steps: {selected_model['n_steps']}")
                 except Exception as load_error:
                     print(f"❌ Failed to load model weights: {load_error}")

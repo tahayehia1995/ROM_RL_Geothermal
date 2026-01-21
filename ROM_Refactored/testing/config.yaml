@@ -7,7 +7,7 @@
 # TESTING PARAMETERS
 # ============================================================================
 testing:
-  num_tsteps: 30                    # Number of time steps for prediction | Higher=longer sequences | Range: 10-100
+  num_tsteps: 29                    # Number of time steps for prediction | Higher=longer sequences | Range: 10-100
   test_batch_size: 16              # Batch size for testing | Can be larger than training batch_size | Range: 16-64
   
 # ============================================================================

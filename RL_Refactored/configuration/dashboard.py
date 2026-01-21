@@ -393,8 +393,8 @@ def calculate_training_only_normalization_params(data_dir=None):
     
     # Load timeseries data
     bhp_raw = load_raw_data(f"{data_dir}/batch_timeseries_data_BHP.h5", "BHP")
-    gas_raw = load_raw_data(f"{data_dir}/batch_timeseries_data_GASRATSC.h5", "GASRATSC")
-    water_raw = load_raw_data(f"{data_dir}/batch_timeseries_data_WATRATSC.h5", "WATRATSC")
+    gas_raw = load_raw_data(f"{data_dir}/batch_timeseries_data_ENERGYRATE.h5", "ENERGYRATE")
+    water_raw = load_raw_data(f"{data_dir}/batch_timeseries_data_WATRATRC.h5", "WATRATRC")
     
     # Apply EXACT same train/test split as training
     n_sample = sw_raw.shape[0]
@@ -423,8 +423,8 @@ def calculate_training_only_normalization_params(data_dir=None):
         'SG': calc_norm_params(sg_train, 'SG'),
         'PRES': calc_norm_params(pres_train, 'PRES'),
         'BHP': calc_norm_params(bhp_train, 'BHP'),
-        'GASRATSC': calc_norm_params(gas_train, 'GASRATSC'),
-        'WATRATSC': calc_norm_params(water_train, 'WATRATSC')
+        'ENERGYRATE': calc_norm_params(gas_train, 'ENERGYRATE'),
+        'WATRATRC': calc_norm_params(water_train, 'WATRATRC')
     }
     
     # Add additional spatial properties if available
@@ -499,13 +499,13 @@ def save_normalization_parameters_for_rl(training_norm_params):
                     "max": str(training_norm_params['BHP']['max'])
                 }
             },
-            "GASRATSC": {
+            "ENERGYRATE": {
                 "normalization_type": "minmax",
                 "selected_wells": ["I1", "I2", "I3"],
                 "parameters": {
                     "type": "minmax",
-                    "min": str(training_norm_params['GASRATSC']['min']),
-                    "max": str(training_norm_params['GASRATSC']['max'])
+                    "min": str(training_norm_params['ENERGYRATE']['min']),
+                    "max": str(training_norm_params['ENERGYRATE']['max'])
                 }
             }
         },
@@ -519,35 +519,35 @@ def save_normalization_parameters_for_rl(training_norm_params):
                     "max": str(training_norm_params['BHP']['max'])
                 }
             },
-            "GASRATSC": {
+            "ENERGYRATE": {
                 "normalization_type": "minmax", 
                 "selected_wells": ["P1", "P2", "P3"],
                 "parameters": {
                     "type": "minmax",
-                    "min": str(training_norm_params['GASRATSC']['min']),
-                    "max": str(training_norm_params['GASRATSC']['max'])
+                    "min": str(training_norm_params['ENERGYRATE']['min']),
+                    "max": str(training_norm_params['ENERGYRATE']['max'])
                 }
             },
-            "WATRATSC": {
+            "WATRATRC": {
                 "normalization_type": "minmax",
                 "selected_wells": ["P1", "P2", "P3"],
                 "parameters": {
                     "type": "minmax",
-                    "min": str(training_norm_params['WATRATSC']['min']),
-                    "max": str(training_norm_params['WATRATSC']['max'])
+                    "min": str(training_norm_params['WATRATRC']['min']),
+                    "max": str(training_norm_params['WATRATRC']['max'])
                 }
             }
         },
         "selection_summary": {
             "spatial_channels": ["SW", "SG", "PRES"],
-            "control_variables": ["BHP", "GASRATSC"],
-            "observation_variables": ["BHP", "GASRATSC", "WATRATSC"],
+            "control_variables": ["BHP", "ENERGYRATE"],
+            "observation_variables": ["BHP", "ENERGYRATE", "WATRATRC"],
             "training_channels": ["SW", "SG", "PRES"]
         },
         "metadata": {
             "created_timestamp": timestamp,
             "source": "RL Configuration Dashboard - Optimal Structure",
-            "structure": "Controls: Producer BHP + Gas Injection, Observations: Injector BHP + Gas Production + Water Production",
+            "structure": "Controls: Producer BHP + Energy Injection, Observations: Injector BHP + Energy Production + Water Production",
             "normalization_method": "training_only_parameters",
             "data_leakage": "eliminated",
             "performance_improvement": "78.4% + 76.2% better than alternatives"
@@ -882,7 +882,7 @@ def generate_z0_from_dashboard(rl_config, rom_model, device):
 
 def auto_detect_action_ranges_from_h5(data_dir=None):
     """
-    Automatically detect Gas Injection and Producer BHP ranges from H5 files
+    Automatically detect Energy Injection and Producer BHP ranges from H5 files
     
     Args:
         data_dir: Directory containing H5 files (if None, uses config default)
@@ -921,8 +921,8 @@ def auto_detect_action_ranges_from_h5(data_dir=None):
         print("🔍 AUTO-DETECTING ACTION RANGES FROM H5 FILES...")
         print("=" * 60)
         
-                 # Check for GASRATSC file (gas injection rates)
-        gas_file = os.path.join(data_dir, 'batch_timeseries_data_GASRATSC.h5')
+                 # Check for ENERGYRATE file (energy injection rates)
+        gas_file = os.path.join(data_dir, 'batch_timeseries_data_ENERGYRATE.h5')
         if os.path.exists(gas_file):
             with h5py.File(gas_file, 'r') as f:
                 if 'data' in f:
@@ -931,7 +931,7 @@ def auto_detect_action_ranges_from_h5(data_dir=None):
                     # Focus on injector wells (first 3 wells - indices 0,1,2) and only active injection
                     if gas_data.shape[2] >= 3:
                         injector_gas = gas_data[:, :, 0:3]  # First 3 wells are injectors
-                        active_gas = injector_gas[injector_gas > 1000]  # Only consider active injection (>1000 ft³/day)
+                        active_gas = injector_gas[injector_gas > 1000]  # Only consider active injection (>1000 BTU/Day)
                         
                         if len(active_gas) > 0:
                             gas_min = np.min(active_gas)
@@ -953,7 +953,7 @@ def auto_detect_action_ranges_from_h5(data_dir=None):
                         'active_values': len(active_gas) if 'active_gas' in locals() else 'all',
                         'min': float(gas_min),
                         'max': float(gas_max),
-                        'source': 'batch_timeseries_data_GASRATSC.h5 (wells 0-2, active >1000)'
+                        'source': 'batch_timeseries_data_ENERGYRATE.h5 (wells 0-2, active >1000)'
                     }
                     
                     print(f"✅ GAS INJECTION RANGES DETECTED:")
@@ -962,7 +962,7 @@ def auto_detect_action_ranges_from_h5(data_dir=None):
                         print(f"   📊 Injector data shape: {injector_gas.shape}")
                         if 'active_gas' in locals():
                             print(f"   🔥 Active injection values (>1000): {len(active_gas)}")
-                    print(f"   📈 Range: [{gas_min:.0f}, {gas_max:.0f}] ft³/day")
+                    print(f"   📈 Range: [{gas_min:.0f}, {gas_max:.0f}] bbl/day")
                     print(f"   🎯 Will be used as Action 0-2 defaults")
                     
         # Check for BHP file (bottom hole pressures)
@@ -998,7 +998,7 @@ def auto_detect_action_ranges_from_h5(data_dir=None):
         if 'gas' in detected_ranges['detection_details'] and 'bhp' in detected_ranges['detection_details']:
             detected_ranges['detection_successful'] = True
             print(f"\n🎉 AUTO-DETECTION SUCCESSFUL!")
-            print(f"   ✅ Both Gas Injection and Producer BHP ranges detected")
+            print(f"   ✅ Both Energy Injection and Producer BHP ranges detected")
             print(f"   📂 Source directory: {data_dir}")
             print(f"   🔄 Dashboard will use these as default action limits")
         elif 'gas' in detected_ranges['detection_details'] or 'bhp' in detected_ranges['detection_details']:
@@ -1100,8 +1100,8 @@ class RLConfigurationDashboard:
         self.default_actions = {
             'bhp_min': detected_ranges['bhp_min'],         # psi - Auto-detected from H5 files
             'bhp_max': detected_ranges['bhp_max'],         # psi - Auto-detected from H5 files
-            'gas_inj_min': detected_ranges['gas_inj_min'], # ft3/day - Auto-detected from H5 files
-            'gas_inj_max': detected_ranges['gas_inj_max']  # ft3/day - Auto-detected from H5 files
+            'gas_inj_min': detected_ranges['gas_inj_min'], # BTU/Day - Auto-detected from H5 files
+            'gas_inj_max': detected_ranges['gas_inj_max']  # BTU/Day - Auto-detected from H5 files
         }
         
         # Store detection details for display
@@ -1110,11 +1110,11 @@ class RLConfigurationDashboard:
         
         if self.detection_successful:
             print(f"✅ DASHBOARD INITIALIZED WITH AUTO-DETECTED RANGES:")
-            print(f"   💨 Gas Injection: [{self.default_actions['gas_inj_min']:.0f}, {self.default_actions['gas_inj_max']:.0f}] ft³/day")
+            print(f"   💨 Energy Injection: [{self.default_actions['gas_inj_min']:.0f}, {self.default_actions['gas_inj_max']:.0f}] BTU/Day")
             print(f"   🔽 Producer BHP: [{self.default_actions['bhp_min']:.2f}, {self.default_actions['bhp_max']:.2f}] psi")
         else:
             print(f"⚠️ DASHBOARD INITIALIZED WITH FALLBACK RANGES:")
-            print(f"   💨 Gas Injection: [{self.default_actions['gas_inj_min']:.0f}, {self.default_actions['gas_inj_max']:.0f}] ft³/day")
+            print(f"   💨 Energy Injection: [{self.default_actions['gas_inj_min']:.0f}, {self.default_actions['gas_inj_max']:.0f}] BTU/Day")
             print(f"   🔽 Producer BHP: [{self.default_actions['bhp_min']:.2f}, {self.default_actions['bhp_max']:.2f}] psi")
         
         # ROM compatibility handled through training-only normalization parameters
@@ -1150,7 +1150,7 @@ class RLConfigurationDashboard:
             },
             'training': {
                 'max_episodes': 100,
-                'max_steps_per_episode': 30,
+                'max_steps_per_episode': 29,
                 'batch_size': 256,
                 'replay_capacity': 100000,
                 'initial_exploration': 30
@@ -1821,7 +1821,7 @@ class RLConfigurationDashboard:
             
             if 'gas' in self.detection_details:
                 gas_details = self.detection_details['gas']
-                detection_html += f"<p>💨 <b>Gas Injection:</b> [{gas_details['min']:.0f}, {gas_details['max']:.0f}] ft³/day<br/>"
+                detection_html += f"<p>💨 <b>Energy Injection:</b> [{gas_details['min']:.0f}, {gas_details['max']:.0f}] BTU/Day<br/>"
                 detection_html += f"&nbsp;&nbsp;&nbsp;&nbsp;📂 Source: {gas_details['source']} (shape: {gas_details['shape']})</p>"
             
             if 'bhp' in self.detection_details:
@@ -1837,7 +1837,7 @@ class RLConfigurationDashboard:
             fallback_html = "<div style='background-color: #fff3cd; padding: 10px; border-left: 4px solid #ffc107; margin: 10px 0;'>"
             fallback_html += "<h4>⚠️ Using Fallback Default Ranges</h4>"
             fallback_html += "<p><b>Auto-detection failed. Using predefined ranges:</b></p>"
-            fallback_html += f"<p>💨 Gas Injection: [{self.default_actions['gas_inj_min']:.0f}, {self.default_actions['gas_inj_max']:.0f}] ft³/day</p>"
+            fallback_html += f"<p>💨 Energy Injection: [{self.default_actions['gas_inj_min']:.0f}, {self.default_actions['gas_inj_max']:.0f}] BTU/Day</p>"
             fallback_html += f"<p>🔽 Producer BHP: [{self.default_actions['bhp_min']:.2f}, {self.default_actions['bhp_max']:.2f}] psi</p>"
             fallback_html += "<p><i>💡 Check that H5 files exist in sr3_batch_output/ directory.</i></p>"
             fallback_html += "</div>"
@@ -1903,7 +1903,7 @@ class RLConfigurationDashboard:
             self.bhp_ranges[f'P{i+1}'] = {'min': min_input, 'max': max_input}
         
         # Gas injection ranges for injectors
-        action_widgets.append(widgets.HTML("<h4>⛽ Gas Injection Ranges (ft³/day) - Injectors</h4>"))
+        action_widgets.append(widgets.HTML("<h4>⛽ Energy Injection Ranges (BTU/Day) - Injectors</h4>"))
         
         self.gas_ranges = {}
         for i in range(3):  # Default 3 injectors
@@ -1976,10 +1976,10 @@ class RLConfigurationDashboard:
         self.economic_inputs = {}
         
         params = [
-            ('gas_injection_revenue', 'Gas Injection Credit ($/ton)', self.default_economics['gas_injection_revenue']),
-            ('gas_injection_cost', 'Gas Injection Cost ($/ton)', self.default_economics['gas_injection_cost']),
+            ('gas_injection_revenue', 'Energy Injection Credit ($/ton)', self.default_economics['gas_injection_revenue']),
+            ('gas_injection_cost', 'Energy Injection Cost ($/ton)', self.default_economics['gas_injection_cost']),
             ('water_production_penalty', 'Water Production Penalty ($/barrel)', self.default_economics['water_production_penalty']),
-            ('gas_production_penalty', 'Gas Production Penalty ($/ton)', self.default_economics['gas_production_penalty']),
+            ('gas_production_penalty', 'Energy Production Penalty ($/ton)', self.default_economics['gas_production_penalty']),
             ('lf3_to_ton_conversion', 'ft³ to ton Conversion Factor', self.default_economics['lf3_to_ton_conversion']),
             ('scale_factor', 'Scale Factor', self.default_economics['scale_factor'])
         ]
@@ -2431,7 +2431,7 @@ Where:
                 <br/>
                 <b>Physical Impact:</b><br/>
                 • BHP ranges: 1200-3000 psi (vs 1087-1305 psi narrow)<br/>
-                • Gas injection: 50K-5M ft³/day (vs 10-25M narrow)<br/>
+                • Energy injection: 50K-5M BTU/Day (vs 10-25M narrow)<br/>
                 • Well differentiation: Each well explores differently<br/>
                 • Temporal correlation: Actions vary smoothly within episodes
             </div>

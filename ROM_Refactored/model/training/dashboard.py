@@ -230,7 +230,7 @@ class TrainingDashboard:
         
         # Evaluation time steps
         self.num_tsteps_input = widgets.IntSlider(
-            value=self.config.training['num_tsteps'] if self.config else 30,
+            value=self.config.training['num_tsteps'] if self.config else 29,
             min=1,
             max=100,
             step=1,

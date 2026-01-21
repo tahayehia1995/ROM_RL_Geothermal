@@ -42,7 +42,7 @@
                 "max": "5050.4287"
             }
         },
-        "GASRATSC": {
+        "ENERGYRATE": {
             "normalization_type": "minmax",
             "selected_wells": [
                 "I1",
@@ -70,7 +70,7 @@
                 "max": "5050.4287"
             }
         },
-        "GASRATSC": {
+        "ENERGYRATE": {
             "normalization_type": "minmax",
             "selected_wells": [
                 "P1",
@@ -83,7 +83,7 @@
                 "max": "143972480.0"
             }
         },
-        "WATRATSC": {
+        "WATRATRC": {
             "normalization_type": "minmax",
             "selected_wells": [
                 "P1",
@@ -105,12 +105,12 @@
         ],
         "control_variables": [
             "BHP",
-            "GASRATSC"
+            "ENERGYRATE"
         ],
         "observation_variables": [
             "BHP",
-            "GASRATSC",
-            "WATRATSC"
+            "ENERGYRATE",
+            "WATRATRC"
         ],
         "training_channels": [
             "SW",
@@ -121,7 +121,7 @@
     "metadata": {
         "created_timestamp": "20251127_193204",
         "source": "RL Configuration Dashboard - Optimal Structure",
-        "structure": "Controls: Producer BHP + Gas Injection, Observations: Injector BHP + Gas Production + Water Production",
+        "structure": "Controls: Producer BHP + Energy Injection, Observations: Injector BHP + Energy Production + Water Production",
         "normalization_method": "training_only_parameters",
         "data_leakage": "eliminated",
         "performance_improvement": "78.4% + 76.2% better than alternatives"

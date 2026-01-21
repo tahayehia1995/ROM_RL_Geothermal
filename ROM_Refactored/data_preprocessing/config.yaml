@@ -40,8 +40,8 @@ normalization:
   
   timeseries_datasets:
     BHP: 'minmax'           # Bottom hole pressure normalization
-    GASRATSC: 'minmax'      # Gas rate normalization
-    WATRATSC: 'minmax'      # Water rate normalization
+    ENERGYRATE: 'minmax'      # Energy rate normalization
+    WATRATRC: 'minmax'      # Water rate normalization
 
 # ============================================================================
 # DATA VALIDATION SETTINGS

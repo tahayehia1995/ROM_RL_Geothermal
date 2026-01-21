@@ -129,8 +129,36 @@ def denormalize_data(normalized_data, norm_params):
         # Reverse log transformation
         data_shifted = np.exp(log_data)
         
-        # Reverse data shift
-        denormalized = data_shifted - epsilon + data_shift
+        # CRITICAL FIX: For very small values, exp(log_data) can be very close to epsilon
+        # When exp(log_data) ≈ epsilon, the subtraction loses precision
+        # Use a more numerically stable calculation by working in log space:
+        # Instead of: original_data = exp(log_data) - epsilon + data_shift
+        # We use: original_data = expm1(log_data - log(epsilon)) * epsilon + data_shift
+        # where expm1(x) = exp(x) - 1, which is more precise for small x
+        
+        # Check if values are very close to epsilon (within 3 orders of magnitude)
+        # If so, use more precise calculation using expm1
+        log_epsilon = np.log(epsilon)
+        close_to_epsilon_mask = np.abs(data_shifted - epsilon) < epsilon * 10.0
+        
+        if np.any(close_to_epsilon_mask):
+            # Use expm1 for better precision: expm1(x) = exp(x) - 1
+            # original_data = exp(log_data) - epsilon + data_shift
+            # = exp(log_data - log(epsilon) + log(epsilon)) - epsilon + data_shift
+            # = exp(log_data - log_epsilon) * epsilon - epsilon + data_shift
+            # = (exp(log_data - log_epsilon) - 1) * epsilon + data_shift
+            # = expm1(log_data - log_epsilon) * epsilon + data_shift
+            
+            # For values close to epsilon, use expm1 for better precision
+            log_diff = log_data - log_epsilon
+            denormalized = np.where(
+                close_to_epsilon_mask,
+                np.expm1(log_diff) * epsilon + data_shift,
+                data_shifted - epsilon + data_shift
+            )
+        else:
+            # Standard calculation
+            denormalized = data_shifted - epsilon + data_shift
         
         return denormalized
     

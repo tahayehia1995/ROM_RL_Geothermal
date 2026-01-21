@@ -90,8 +90,8 @@ class ReservoirEnvironment(object):
                 'max': 1305.3419189453125   # psi - Default maximum  
             },
             'gas_injection': {
-                'min': 6180072.5,          # ft³/day - Default minimum
-                'max': 100646896.0          # ft³/day - Default maximum
+                'min': 6180072.5,          # BTU/Day - Default minimum
+                'max': 100646896.0          # BTU/Day - Default maximum
             }
         }
         
@@ -119,7 +119,7 @@ class ReservoirEnvironment(object):
         bhp_max = self.restricted_action_ranges['producer_bhp']['max']
         actions_restricted[:, 0:3] = action_01[:, 0:3] * (bhp_max - bhp_min) + bhp_min
         
-        # ✅ CORRECTED: Map Gas Injection (last 3 actions) to restricted range  
+        # ✅ CORRECTED: Map Energy Injection (last 3 actions) to restricted range  
         gas_min = self.restricted_action_ranges['gas_injection']['min']
         gas_max = self.restricted_action_ranges['gas_injection']['max']
         actions_restricted[:, 3:6] = action_01[:, 3:6] * (gas_max - gas_min) + gas_min
@@ -134,9 +134,9 @@ class ReservoirEnvironment(object):
             full_bhp_max = float(bhp_params['max'])
             actions_for_rom[:, 0:3] = (actions_restricted[:, 0:3] - full_bhp_min) / (full_bhp_max - full_bhp_min)
         
-        # ✅ CORRECTED: Normalize Gas Injection using training parameters
-        if 'GASRATSC' in self.norm_params:
-            gas_params = self.norm_params['GASRATSC']
+        # ✅ CORRECTED: Normalize Energy Injection using training parameters
+        if 'ENERGYRATE' in self.norm_params:
+            gas_params = self.norm_params['ENERGYRATE']
             full_gas_min = float(gas_params['min'])
             full_gas_max = float(gas_params['max'])
             actions_for_rom[:, 3:6] = (actions_restricted[:, 3:6] - full_gas_min) / (full_gas_max - full_gas_min)
@@ -164,7 +164,7 @@ class ReservoirEnvironment(object):
         bhp_max = self.restricted_action_ranges['producer_bhp']['max']
         actions_physical[:, 0:3] = action_01[:, 0:3] * (bhp_max - bhp_min) + bhp_min
         
-        # Map Gas Injection (last 3 actions) from [0,1] to dashboard gas range  
+        # Map Energy Injection (last 3 actions) from [0,1] to dashboard energy range  
         gas_min = self.restricted_action_ranges['gas_injection']['min']
         gas_max = self.restricted_action_ranges['gas_injection']['max']
         actions_physical[:, 3:6] = action_01[:, 3:6] * (gas_max - gas_min) + gas_min
@@ -179,9 +179,9 @@ class ReservoirEnvironment(object):
             full_bhp_max = float(bhp_params['max'])
             actions_for_rom[:, 0:3] = (actions_physical[:, 0:3] - full_bhp_min) / (full_bhp_max - full_bhp_min)
         
-        # Normalize Gas Injection using global training parameters
-        if 'GASRATSC' in self.norm_params:
-            gas_params = self.norm_params['GASRATSC']
+        # Normalize Energy Injection using global training parameters
+        if 'ENERGYRATE' in self.norm_params:
+            gas_params = self.norm_params['ENERGYRATE']
             full_gas_min = float(gas_params['min'])
             full_gas_max = float(gas_params['max'])
             actions_for_rom[:, 3:6] = (actions_physical[:, 3:6] - full_gas_min) / (full_gas_max - full_gas_min)
@@ -189,7 +189,7 @@ class ReservoirEnvironment(object):
         # Debug info for first few steps
         if self.istep <= 3:
             print(f"      📊 Dashboard → Physical: BHP=[{actions_physical[0,0]:.1f},{actions_physical[0,1]:.1f},{actions_physical[0,2]:.1f}] psi")
-            print(f"      📊 Dashboard → Physical: Gas=[{actions_physical[0,3]:.0f},{actions_physical[0,4]:.0f},{actions_physical[0,5]:.0f}] ft³/day")
+            print(f"      📊 Dashboard → Physical: Energy=[{actions_physical[0,3]:.0f},{actions_physical[0,4]:.0f},{actions_physical[0,5]:.0f}] BTU/Day")
             print(f"      🔧 Physical → ROM: [{actions_for_rom.min().item():.3f}, {actions_for_rom.max().item():.3f}]")
         
         return actions_for_rom
@@ -318,7 +318,7 @@ class ReservoirEnvironment(object):
             raise ValueError("❌ CRITICAL: No normalization parameters found! Run dashboard configuration first to generate parameters.")
         
         # Final validation - ensure all required parameters are available
-        required_params = ['BHP', 'GASRATSC', 'WATRATSC']
+        required_params = ['BHP', 'ENERGYRATE', 'WATRATRC']
         missing_params = [p for p in required_params if p not in self.norm_params]
         if missing_params:
             raise ValueError(f"❌ CRITICAL: Missing required normalization parameters: {missing_params}. Available: {list(self.norm_params.keys())}")
@@ -391,7 +391,7 @@ class ReservoirEnvironment(object):
                 yobs_normalized[:, obs_idx], obs_idx
             )
         
-        # ✅ CORRECTED: Denormalize Gas Production (next 3 observations)
+        # ✅ CORRECTED: Denormalize Energy Production (next 3 observations)
         for obs_idx in range(self.num_inj, self.num_inj + self.num_prod):
             yobs_physical[:, obs_idx] = self._denormalize_single_observation(
                 yobs_normalized[:, obs_idx], obs_idx
@@ -434,9 +434,9 @@ class ReservoirEnvironment(object):
                     obs_min = float(norm_params['min']) if isinstance(norm_params['min'], str) else norm_params['min']
                     obs_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
                     return data * (obs_max - obs_min) + obs_min
-        elif obs_idx < 6:  # ✅ CORRECTED: Gas production (3-5)
-            if 'GASRATSC' in self.norm_params:
-                norm_params = self.norm_params['GASRATSC']
+        elif obs_idx < 6:  # ✅ CORRECTED: Energy production (3-5)
+            if 'ENERGYRATE' in self.norm_params:
+                norm_params = self.norm_params['ENERGYRATE']
                 if norm_params.get('type') == 'none':
                     return data
                 elif norm_params.get('type') == 'log':
@@ -451,8 +451,8 @@ class ReservoirEnvironment(object):
                     obs_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
                     return data * (obs_max - obs_min) + obs_min
         else:  # ✅ CORRECTED: Water production (6-8)
-            if 'WATRATSC' in self.norm_params:
-                norm_params = self.norm_params['WATRATSC']
+            if 'WATRATRC' in self.norm_params:
+                norm_params = self.norm_params['WATRATRC']
                 if norm_params.get('type') == 'none':
                     return data
                 elif norm_params.get('type') == 'log':
@@ -483,7 +483,7 @@ class ReservoirEnvironment(object):
             if action_restricted.shape[0] > 0:
                 # Action order: [Producer_BHP(0-2), Gas_Injection(3-5)]
                 producer_bhp_norm = action_restricted[0, 0:self.num_prod].detach().cpu().numpy()  # Producer BHP normalized
-                gas_injection_norm = action_restricted[0, self.num_prod:self.num_prod+self.num_inj].detach().cpu().numpy()  # Gas Injection normalized
+                gas_injection_norm = action_restricted[0, self.num_prod:self.num_prod+self.num_inj].detach().cpu().numpy()  # Energy Injection normalized
                 
                 # Format and print normalized actions
                 bhp_norm_str = ", ".join([f"{val:.3f}" for val in producer_bhp_norm])
@@ -554,7 +554,7 @@ class ReservoirEnvironment(object):
             if yobs_original.shape[0] > 0:
                 # Extract normalized observation values
                 injector_bhp_norm = yobs_original[0, 0:self.num_inj].detach().cpu().numpy()  # Injector BHP normalized
-                gas_production_norm = yobs_original[0, self.num_inj:self.num_inj+self.num_prod].detach().cpu().numpy()  # Gas Production normalized
+                gas_production_norm = yobs_original[0, self.num_inj:self.num_inj+self.num_prod].detach().cpu().numpy()  # Energy Production normalized
                 water_production_norm = yobs_original[0, self.num_inj+self.num_prod:self.num_inj+self.num_prod*2].detach().cpu().numpy()  # Water Production normalized
                 
                 # Format and print normalized observations
@@ -577,19 +577,19 @@ class ReservoirEnvironment(object):
         
         # 📊 Print predicted observations in physical units (similar to actions)
         if self.istep <= 3:
-            # Observation order: [Injector_BHP(0-2), Gas_Production(3-5), Water_Production(6-8)]
+            # Observation order: [Injector_BHP(0-2), Energy_Production(3-5), Water_Production(6-8)]
             if yobs.shape[0] > 0:
                 # Extract observation values
                 injector_bhp = yobs[0, 0:self.num_inj].detach().cpu().numpy()  # Injector BHP (psi)
-                gas_production = yobs[0, self.num_inj:self.num_inj+self.num_prod].detach().cpu().numpy()  # Gas Production (ft³/day)
-                water_production = yobs[0, self.num_inj+self.num_prod:self.num_inj+self.num_prod*2].detach().cpu().numpy()  # Water Production (ft³/day)
+                energy_production = yobs[0, self.num_inj:self.num_inj+self.num_prod].detach().cpu().numpy()  # Energy Production (BTU/Day)
+                water_production = yobs[0, self.num_inj+self.num_prod:self.num_inj+self.num_prod*2].detach().cpu().numpy()  # Water Production (bbl/day)
                 
                 # Format and print observations
                 bhp_str = ", ".join([f"{val:.1f}" for val in injector_bhp])
-                gas_str = ", ".join([f"{val:.0f}" for val in gas_production])
+                energy_str = ", ".join([f"{val:.0f}" for val in energy_production])
                 water_str = ", ".join([f"{val:.0f}" for val in water_production])
                 
-                print(f"   📊 Step {self.istep}: Predicted observations → Injector_BHP=[{bhp_str}] psi, Gas_Production=[{gas_str}] ft³/day, Water_Production=[{water_str}] ft³/day")
+                print(f"   📊 Step {self.istep}: Predicted observations → Injector_BHP=[{bhp_str}] psi, Energy_Production=[{energy_str}] BTU/Day, Water_Production=[{water_str}] bbl/day")
 
         # Calculate reward with physical actions (normalization parameters always available)
         try:
@@ -600,15 +600,15 @@ class ReservoirEnvironment(object):
             
             # Print physical actions and observations for first few steps
             if self.istep <= 3:
-                # Action order: [Producer_BHP(0-2), Gas_Injection(3-5)]
+                # Action order: [Producer_BHP(0-2), Energy_Injection(3-5)]
                 producer_bhp = action_physical[0, 0:self.num_prod].detach().cpu().numpy()  # Producer BHP (psi)
-                gas_injection = action_physical[0, self.num_prod:self.num_prod+self.num_inj].detach().cpu().numpy()  # Gas Injection (ft³/day)
+                energy_injection = action_physical[0, self.num_prod:self.num_prod+self.num_inj].detach().cpu().numpy()  # Energy Injection (BTU/Day)
                 
                 # Format and print actions
                 bhp_str = ", ".join([f"{val:.1f}" for val in producer_bhp])
-                gas_str = ", ".join([f"{val:.0f}" for val in gas_injection])
+                energy_str = ", ".join([f"{val:.0f}" for val in energy_injection])
                 
-                print(f"   🎯 Step {self.istep}: Policy actions → Producer_BHP=[{bhp_str}] psi, Gas_Injection=[{gas_str}] ft³/day")
+                print(f"   🎯 Step {self.istep}: Policy actions → Producer_BHP=[{bhp_str}] psi, Energy_Injection=[{energy_str}] BTU/Day")
             
             # Use physical actions for reward calculation
             reward = reward_fun(yobs, action_physical, self.num_prod, self.num_inj, self.config)
@@ -738,7 +738,7 @@ class ReservoirEnvironment(object):
         else:
             print(f"   ⚠️ No BHP ranges in dashboard config")
         
-        # Extract Gas Injection ranges from dashboard
+        # Extract Energy Injection ranges from dashboard
         gas_ranges = action_ranges.get('gas_injection', {})
         if gas_ranges:
             gas_mins = [ranges['min'] for ranges in gas_ranges.values()]
@@ -752,7 +752,7 @@ class ReservoirEnvironment(object):
                 self.restricted_action_ranges['gas_injection']['min'] = dashboard_gas_min
                 self.restricted_action_ranges['gas_injection']['max'] = dashboard_gas_max
                 
-                print(f"   ✅ Gas Injection updated to DASHBOARD: [{dashboard_gas_min:.0f}, {dashboard_gas_max:.0f}] ft³/day")
+                print(f"   ✅ Energy Injection updated to DASHBOARD: [{dashboard_gas_min:.0f}, {dashboard_gas_max:.0f}] BTU/Day")
             else:
                 print(f"   ⚠️ Empty gas ranges in dashboard config")
         else:

@@ -11,17 +11,8 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter, MaxNLocator, ScalarFormatter
 import os
 import json
-import io
 from datetime import datetime
 from pathlib import Path
-
-# PIL Image import for GIF creation
-try:
-    from PIL import Image
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
-    Image = None
 
 # Widget imports
 try:
@@ -79,7 +70,7 @@ class InteractiveVisualizationDashboard:
     """
     
     def __init__(self, state_pred, state_seq_true_aligned, yobs_pred, yobs_seq_true, 
-                 test_case_indices, norm_params, Nx, Ny, Nz, num_tstep=30, channel_names=None,
+                 test_case_indices, norm_params, Nx, Ny, Nz, num_tstep=29, channel_names=None,
                  my_rom=None, test_controls=None, test_observations=None, device=None,
                  train_state_pred=None, train_state_seq_true_aligned=None, 
                  train_yobs_pred=None, train_yobs_seq_true=None, train_case_indices=None,
@@ -122,7 +113,9 @@ class InteractiveVisualizationDashboard:
         self.yobs_pred = yobs_pred  # Current predictions (default: state-based)
         self.yobs_seq_true = yobs_seq_true
         self.test_case_indices = test_case_indices
-        self.norm_params = norm_params
+        
+        # Ensure normalization parameters have proper data types (convert strings to numbers)
+        self.norm_params = self._ensure_norm_params_types(norm_params) if norm_params else {}
         self.Nx, self.Ny, self.Nz = Nx, Ny, Nz
         
         # Auto-detect num_tstep from data shape if not provided or if default (24) is used
@@ -243,9 +236,9 @@ class InteractiveVisualizationDashboard:
             self.field_names = ['Water Saturation', 'Gas Saturation', 'Pressure']
             self.field_keys = ['SW', 'SG', 'PRES']
         self.obs_names = ['Inj1 BHP', 'Inj2 BHP', 'Inj3 BHP', 
-                         'Prod1 Gas', 'Prod2 Gas', 'Prod3 Gas',
+                         'Prod1 Energy', 'Prod2 Energy', 'Prod3 Energy',
                          'Prod1 Water', 'Prod2 Water', 'Prod3 Water']
-        self.obs_units = ['psi','psi','psi','bbl/day','bbl/day', 'bbl/day', 'bbl/day', 'bbl/day','bbl/day']
+        self.obs_units = ['psi','psi','psi','BTU/Day','BTU/Day', 'BTU/Day', 'bbl/day', 'bbl/day','bbl/day']
         
         # Load well locations from config
         self._load_well_locations()
@@ -452,6 +445,55 @@ class InteractiveVisualizationDashboard:
         self.timeseries_case_slider.observe(self._update_timeseries_metrics, names='value')
         self.timeseries_obs_dropdown.observe(self._update_timeseries_metrics, names='value')
     
+    def _ensure_norm_params_types(self, norm_params):
+        """
+        Ensure all normalization parameters are proper numeric types (not strings).
+        This fixes issues where JSON serialization stores numbers as strings.
+        
+        Args:
+            norm_params: Dictionary of normalization parameters
+            
+        Returns:
+            Dictionary with converted parameter types
+        """
+        if not norm_params:
+            return norm_params
+        
+        def convert_strings_to_numbers(params_dict):
+            """Recursively convert string numeric values to floats"""
+            converted_params = {}
+            for key, value in params_dict.items():
+                if isinstance(value, str):
+                    try:
+                        # Try to convert string to float
+                        converted_params[key] = float(value)
+                    except (ValueError, TypeError):
+                        # If conversion fails, keep as string
+                        converted_params[key] = value
+                elif isinstance(value, dict):
+                    # Recursively convert nested dictionaries
+                    converted_params[key] = convert_strings_to_numbers(value)
+                elif isinstance(value, list):
+                    # Convert list elements if they're strings
+                    try:
+                        converted_params[key] = [float(v) if isinstance(v, str) else v for v in value]
+                    except (ValueError, TypeError):
+                        converted_params[key] = value
+                else:
+                    # Keep non-string values as-is
+                    converted_params[key] = value
+            return converted_params
+        
+        # Convert all parameters recursively
+        converted_params = {}
+        for var_name, var_params in norm_params.items():
+            if isinstance(var_params, dict):
+                converted_params[var_name] = convert_strings_to_numbers(var_params)
+            else:
+                converted_params[var_name] = var_params
+        
+        return converted_params
+    
     def _load_mask_file(self, button):
         """Load inactive cell mask file with support for case-specific masks"""
         try:
@@ -603,7 +645,7 @@ class InteractiveVisualizationDashboard:
         
         return yobs_pred_latent
             
-    def _get_layer_mask(self, case_idx, layer_idx, use_training_data=False):
+    def _get_layer_mask(self, case_idx, layer_idx, use_training_data=False, debug=False):
         """
         Get 2D layer mask for specific case and layer.
         
@@ -611,6 +653,7 @@ class InteractiveVisualizationDashboard:
             case_idx: Case index (index into test_case_indices or train_case_indices, depending on use_training_data)
             layer_idx: Layer index
             use_training_data: If True, case_idx is an index into train_case_indices; if False, into test_case_indices
+            debug: If True, print diagnostic information
         
         Returns:
             2D boolean mask array (Nx, Ny)
@@ -645,20 +688,46 @@ class InteractiveVisualizationDashboard:
                     # Extract 2D layer mask
                     layer_mask_2d = self.active_mask_4d[mask_case_idx, :, :, layer_idx]  # Shape: (Nx, Ny)
                     
+                    # Diagnostic output
+                    if debug:
+                        active_cells = np.sum(layer_mask_2d)
+                        total_cells = layer_mask_2d.size
+                        print(f"🔍 Layer Mask Diagnostic - Case {case_idx} (actual: {actual_case_idx}, mask_idx: {mask_case_idx}), Layer {layer_idx}:")
+                        print(f"   Active cells: {active_cells}/{total_cells} ({100*active_cells/total_cells:.1f}%)")
+                        if active_cells == 0:
+                            print(f"   ⚠️ WARNING: Layer {layer_idx} has NO active cells! All data will be masked out.")
+                    
                     return layer_mask_2d
                     
                 elif self.mask_type == 'global':
                     # Use global mask for all cases: (Nx, Ny, Nz)
                     layer_mask_2d = self.active_mask_3d[:, :, layer_idx]  # Shape: (Nx, Ny)
+                    
+                    # Diagnostic output
+                    if debug:
+                        active_cells = np.sum(layer_mask_2d)
+                        total_cells = layer_mask_2d.size
+                        print(f"🔍 Layer Mask Diagnostic - Case {case_idx}, Layer {layer_idx} (global mask):")
+                        print(f"   Active cells: {active_cells}/{total_cells} ({100*active_cells/total_cells:.1f}%)")
+                        if active_cells == 0:
+                            print(f"   ⚠️ WARNING: Layer {layer_idx} has NO active cells! All data will be masked out.")
+                    
                     return layer_mask_2d
                     
                 else:
+                    if debug:
+                        print(f"🔍 Layer Mask Diagnostic - Case {case_idx}, Layer {layer_idx}: Unknown mask type, using all-active mask")
                     return np.ones((self.Nx, self.Ny), dtype=bool)
                     
             except Exception as e:
+                if debug:
+                    print(f"🔍 Layer Mask Diagnostic - Case {case_idx}, Layer {layer_idx}: Exception occurred: {e}")
+                    print(f"   Falling back to all-active mask")
                 return np.ones((self.Nx, self.Ny), dtype=bool)
         
         # If no mask loaded or masking disabled, return all active (no masking)
+        if debug:
+            print(f"🔍 Layer Mask Diagnostic - Case {case_idx}, Layer {layer_idx}: No masking enabled, using all-active mask")
         return np.ones((self.Nx, self.Ny), dtype=bool)
     
     def _get_all_layer_masks_vectorized(self, case_indices, use_training_data=False):
@@ -748,7 +817,7 @@ class InteractiveVisualizationDashboard:
             n_cases = len(case_indices) if case_indices is not None else 1
             return np.ones((n_cases, self.Nx, self.Ny, self.Nz), dtype=bool)
         
-    def _denormalize_field_data(self, data, field_key):
+    def _denormalize_field_data(self, data, field_key, debug=False):
         """Denormalize field data using stored parameters"""
         if field_key not in self.norm_params:
             print(f"⚠️ Warning: No normalization parameters found for {field_key}")
@@ -756,30 +825,142 @@ class InteractiveVisualizationDashboard:
             
         norm_params = self.norm_params[field_key]
         
+        if debug:
+            print(f"🔍 Denormalization Diagnostic - Field: {field_key}, Type: {norm_params.get('type', 'unknown')}")
+            print(f"   Input data range: [{np.nanmin(data):.6f}, {np.nanmax(data):.6f}]")
+            print(f"   Input data shape: {data.shape}")
+            print(f"   Input NaN count: {np.sum(np.isnan(data))}")
+            print(f"   Input Inf count: {np.sum(np.isinf(data))}")
+        
         if norm_params.get('type') == 'none':
             # Data was not normalized, return as-is
+            if debug:
+                print(f"   No normalization applied (type='none')")
             return data
         elif norm_params.get('type') == 'log':
             # Reverse log normalization
             # Step 1: Reverse min-max scaling of log data
             log_min = norm_params['log_min']
             log_max = norm_params['log_max']
-            log_data = data * (log_max - log_min) + log_min
+            
+            # Ensure log_min and log_max are numbers, not strings
+            if isinstance(log_min, str):
+                log_min = float(log_min)
+            if isinstance(log_max, str):
+                log_max = float(log_max)
+            
+            if debug:
+                print(f"   Log normalization params: log_min={log_min}, log_max={log_max}")
+                print(f"   Checking normalized data range...")
+                if np.any(data < 0) or np.any(data > 1):
+                    out_of_range = np.sum((data < 0) | (data > 1))
+                    print(f"   ⚠️ WARNING: {out_of_range} values outside [0,1] range!")
+                    print(f"      Min: {np.nanmin(data):.6f}, Max: {np.nanmax(data):.6f}")
+                    print(f"      Clamping to [0,1] range to prevent NaN/Inf in denormalization")
+            
+            # Clamp normalized data to [0,1] to prevent NaN/Inf in log denormalization
+            # This handles cases where model predictions slightly exceed normalization bounds
+            data_clamped = np.clip(data, 0.0, 1.0)
+            
+            log_data = data_clamped * (log_max - log_min) + log_min
+            
+            if debug:
+                print(f"   After log scaling: range=[{np.nanmin(log_data):.6f}, {np.nanmax(log_data):.6f}]")
+                print(f"   Log data NaN count: {np.sum(np.isnan(log_data))}")
+                print(f"   Log data Inf count: {np.sum(np.isinf(log_data))}")
             
             # Step 2: Reverse log transform
             exp_data = np.exp(log_data)
             
+            if debug:
+                print(f"   After exp(): range=[{np.nanmin(exp_data):.6f}, {np.nanmax(exp_data):.6f}]")
+                print(f"   Exp data NaN count: {np.sum(np.isnan(exp_data))}")
+                print(f"   Exp data Inf count: {np.sum(np.isinf(exp_data))}")
+                if np.any(np.isinf(exp_data)):
+                    inf_count = np.sum(np.isinf(exp_data))
+                    print(f"   ⚠️ WARNING: {inf_count} Inf values after exp()!")
+            
             # Step 3: Reverse data shifting
             epsilon = norm_params.get('epsilon', 1e-8)
             data_shift = norm_params.get('data_shift', 0)
-            original_data = exp_data - epsilon + data_shift
+            
+            if isinstance(epsilon, str):
+                epsilon = float(epsilon)
+            if isinstance(data_shift, str):
+                data_shift = float(data_shift)
+            
+            # CRITICAL FIX: For very small values, exp(log_data) can be very close to epsilon
+            # When exp(log_data) ≈ epsilon, the subtraction exp_data - epsilon loses precision
+            # Use a more numerically stable calculation by working in log space:
+            # Instead of: original_data = exp(log_data) - epsilon + data_shift
+            # We use: original_data = expm1(log_data - log(epsilon)) * epsilon + data_shift
+            # where expm1(x) = exp(x) - 1, which is more precise for small x
+            
+            # Check if values are very close to epsilon (within 3 orders of magnitude)
+            # If so, use more precise calculation using expm1
+            log_epsilon = np.log(epsilon)
+            close_to_epsilon_mask = np.abs(exp_data - epsilon) < epsilon * 10.0
+            
+            if np.any(close_to_epsilon_mask):
+                # Use expm1 for better precision: expm1(x) = exp(x) - 1
+                # original_data = exp(log_data) - epsilon + data_shift
+                # = exp(log_data - log(epsilon) + log(epsilon)) - epsilon + data_shift
+                # = exp(log_data - log_epsilon) * epsilon - epsilon + data_shift
+                # = (exp(log_data - log_epsilon) - 1) * epsilon + data_shift
+                # = expm1(log_data - log_epsilon) * epsilon + data_shift
+                
+                # For values close to epsilon, use expm1 for better precision
+                log_diff = log_data - log_epsilon
+                original_data = np.where(
+                    close_to_epsilon_mask,
+                    np.expm1(log_diff) * epsilon + data_shift,
+                    exp_data - epsilon + data_shift
+                )
+            else:
+                # Standard calculation when values are not close to epsilon
+                original_data = exp_data - epsilon + data_shift
+            
+            if debug:
+                close_count = np.sum(close_to_epsilon_mask) if 'close_to_epsilon_mask' in locals() else 0
+                if close_count > 0:
+                    print(f"   ⚠️ Using precision-preserving calculation for {close_count} values close to epsilon")
+                print(f"   Epsilon: {epsilon:.2e}, Data shift: {data_shift:.2e}")
+                print(f"   Exp data range: [{np.nanmin(exp_data):.2e}, {np.nanmax(exp_data):.2e}]")
+                print(f"   Final denormalized: range=[{np.nanmin(original_data):.2e}, {np.nanmax(original_data):.2e}]")
+                print(f"   Final NaN count: {np.sum(np.isnan(original_data))}")
+                print(f"   Final Inf count: {np.sum(np.isinf(original_data))}")
+                if np.any(np.isnan(original_data)) or np.any(np.isinf(original_data)):
+                    print(f"   ⚠️ WARNING: Denormalized data contains NaN or Inf values!")
+                # Check if all values are effectively zero
+                non_zero_count = np.sum(np.abs(original_data) > 1e-15)
+                if non_zero_count == 0:
+                    print(f"   ⚠️ CRITICAL: All denormalized values are effectively zero!")
+                    print(f"      This indicates a precision loss issue in log denormalization")
+                    print(f"      The original data may have been very small (on order of epsilon={epsilon:.2e})")
             
             return original_data
         else:
             # Standard min-max denormalization
             field_min = norm_params['min']
             field_max = norm_params['max']
-            return data * (field_max - field_min) + field_min
+            
+            # Ensure field_min and field_max are numbers, not strings
+            if isinstance(field_min, str):
+                field_min = float(field_min)
+            if isinstance(field_max, str):
+                field_max = float(field_max)
+            
+            if debug:
+                print(f"   Min-max params: min={field_min}, max={field_max}")
+            
+            denormalized = data * (field_max - field_min) + field_min
+            
+            if debug:
+                print(f"   Denormalized range: [{np.nanmin(denormalized):.6f}, {np.nanmax(denormalized):.6f}]")
+                print(f"   Denormalized NaN count: {np.sum(np.isnan(denormalized))}")
+                print(f"   Denormalized Inf count: {np.sum(np.isinf(denormalized))}")
+            
+            return denormalized
         
     def _denormalize_obs_data(self, data, obs_idx):
         """Denormalize observation data based on observation type with support for 'none' normalization"""
@@ -790,34 +971,34 @@ class InteractiveVisualizationDashboard:
                     return data  # No normalization was applied, return as-is
                 elif norm_params.get('type') == 'log':
                     # Reverse log normalization
-                    log_min = float(norm_params['log_min']) if isinstance(norm_params['log_min'], str) else norm_params['log_min']
-                    log_max = float(norm_params['log_max']) if isinstance(norm_params['log_max'], str) else norm_params['log_max']
+                    log_min = norm_params['log_min']
+                    log_max = norm_params['log_max']
                     log_data = data * (log_max - log_min) + log_min
-                    epsilon = float(norm_params.get('epsilon', 1e-8)) if isinstance(norm_params.get('epsilon', 1e-8), str) else norm_params.get('epsilon', 1e-8)
-                    data_shift = float(norm_params.get('data_shift', 0)) if isinstance(norm_params.get('data_shift', 0), str) else norm_params.get('data_shift', 0)
+                    epsilon = norm_params.get('epsilon', 1e-8)
+                    data_shift = norm_params.get('data_shift', 0)
                     return np.exp(log_data) - epsilon + data_shift
                 else:
                     # Standard min-max denormalization
-                    obs_min = float(norm_params['min']) if isinstance(norm_params['min'], str) else norm_params['min']
-                    obs_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
+                    obs_min = norm_params['min']
+                    obs_max = norm_params['max']
                     return data * (obs_max - obs_min) + obs_min
-        elif obs_idx < 6:  # Gas production (indices 3-5)
-            if 'GASRATRC' in self.norm_params:
-                norm_params = self.norm_params['GASRATRC']
+        elif obs_idx < 6:  # Energy production (indices 3-5)
+            if 'ENERGYRATE' in self.norm_params:
+                norm_params = self.norm_params['ENERGYRATE']
                 if norm_params.get('type') == 'none':
                     return data  # No normalization was applied, return as-is
                 elif norm_params.get('type') == 'log':
                     # Reverse log normalization
-                    log_min = float(norm_params['log_min']) if isinstance(norm_params['log_min'], str) else norm_params['log_min']
-                    log_max = float(norm_params['log_max']) if isinstance(norm_params['log_max'], str) else norm_params['log_max']
+                    log_min = norm_params['log_min']
+                    log_max = norm_params['log_max']
                     log_data = data * (log_max - log_min) + log_min
-                    epsilon = float(norm_params.get('epsilon', 1e-8)) if isinstance(norm_params.get('epsilon', 1e-8), str) else norm_params.get('epsilon', 1e-8)
-                    data_shift = float(norm_params.get('data_shift', 0)) if isinstance(norm_params.get('data_shift', 0), str) else norm_params.get('data_shift', 0)
+                    epsilon = norm_params.get('epsilon', 1e-8)
+                    data_shift = norm_params.get('data_shift', 0)
                     return np.exp(log_data) - epsilon + data_shift
                 else:
                     # Standard min-max denormalization
-                    obs_min = float(norm_params['min']) if isinstance(norm_params['min'], str) else norm_params['min']
-                    obs_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
+                    obs_min = norm_params['min'] 
+                    obs_max = norm_params['max']
                     return data * (obs_max - obs_min) + obs_min
         else:  # Water production (indices 6-8)
             if 'WATRATRC' in self.norm_params:
@@ -826,16 +1007,16 @@ class InteractiveVisualizationDashboard:
                     return data  # No normalization was applied, return as-is
                 elif norm_params.get('type') == 'log':
                     # Reverse log normalization
-                    log_min = float(norm_params['log_min']) if isinstance(norm_params['log_min'], str) else norm_params['log_min']
-                    log_max = float(norm_params['log_max']) if isinstance(norm_params['log_max'], str) else norm_params['log_max']
+                    log_min = norm_params['log_min']
+                    log_max = norm_params['log_max']
                     log_data = data * (log_max - log_min) + log_min
-                    epsilon = float(norm_params.get('epsilon', 1e-8)) if isinstance(norm_params.get('epsilon', 1e-8), str) else norm_params.get('epsilon', 1e-8)
-                    data_shift = float(norm_params.get('data_shift', 0)) if isinstance(norm_params.get('data_shift', 0), str) else norm_params.get('data_shift', 0)
+                    epsilon = norm_params.get('epsilon', 1e-8)
+                    data_shift = norm_params.get('data_shift', 0)
                     return np.exp(log_data) - epsilon + data_shift
                 else:
                     # Standard min-max denormalization
-                    obs_min = float(norm_params['min']) if isinstance(norm_params['min'], str) else norm_params['min']
-                    obs_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
+                    obs_min = norm_params['min']
+                    obs_max = norm_params['max']
                     return data * (obs_max - obs_min) + obs_min
             
         return data  # Fallback: return data as-is if no normalization params found
@@ -958,34 +1139,34 @@ class InteractiveVisualizationDashboard:
                     saved_files.append(output_filename)
                     print(f"  ✅ Saved {output_filename} (shape: {full_bhp.shape})")
                 
-                # GASRATRC observations (indices 3-5)
-                if 'GASRATRC' in self.norm_params:
-                    gas_pred = self.yobs_pred[:, :, 3:6].cpu().detach().numpy()  # (num_case, num_tstep, 3)
+                # ENERGYRATE observations (indices 3-5)
+                if 'ENERGYRATE' in self.norm_params:
+                    energy_pred = self.yobs_pred[:, :, 3:6].cpu().detach().numpy()  # (num_case, num_tstep, 3)
                     
                     # Denormalize
-                    denormalized_gas = np.zeros_like(gas_pred)
-                    for case_idx in range(gas_pred.shape[0]):
-                        for timestep_idx in range(gas_pred.shape[1]):
+                    denormalized_energy = np.zeros_like(energy_pred)
+                    for case_idx in range(energy_pred.shape[0]):
+                        for timestep_idx in range(energy_pred.shape[1]):
                             for well_idx in range(3):
-                                obs_data = gas_pred[case_idx, timestep_idx, well_idx]
+                                obs_data = energy_pred[case_idx, timestep_idx, well_idx]
                                 denormalized_obs = self._denormalize_obs_data(obs_data, 3 + well_idx)
-                                denormalized_gas[case_idx, timestep_idx, well_idx] = denormalized_obs
+                                denormalized_energy[case_idx, timestep_idx, well_idx] = denormalized_obs
                     
                     # Create full array
-                    full_gas = np.zeros((total_cases, num_timesteps_original, 3), dtype=denormalized_gas.dtype)
+                    full_energy = np.zeros((total_cases, num_timesteps_original, 3), dtype=denormalized_energy.dtype)
                     test_indices = np.array(self.test_case_indices)
-                    num_pred_timesteps = min(denormalized_gas.shape[1], num_timesteps_original)
+                    num_pred_timesteps = min(denormalized_energy.shape[1], num_timesteps_original)
                     # Use advanced indexing to place data correctly
                     for i, case_idx in enumerate(test_indices):
-                        full_gas[case_idx, :num_pred_timesteps, :] = denormalized_gas[i, :num_pred_timesteps, :]
+                        full_energy[case_idx, :num_pred_timesteps, :] = denormalized_energy[i, :num_pred_timesteps, :]
                     
-                    # Save GASRATRC
-                    output_filename = f"batch_timeseries_data_GASRATRC_predicted.h5"
+                    # Save ENERGYRATE
+                    output_filename = f"batch_timeseries_data_ENERGYRATE_predicted.h5"
                     output_path = os.path.join(output_dir, output_filename)
                     with h5py.File(output_path, 'w') as hf:
-                        hf.create_dataset('data', data=full_gas)
+                        hf.create_dataset('data', data=full_energy)
                     saved_files.append(output_filename)
-                    print(f"  ✅ Saved {output_filename} (shape: {full_gas.shape})")
+                    print(f"  ✅ Saved {output_filename} (shape: {full_energy.shape})")
                 
                 # WATRATRC observations (indices 6-8)
                 if 'WATRATRC' in self.norm_params:
@@ -1047,27 +1228,107 @@ class InteractiveVisualizationDashboard:
             actual_year = self.all_years[timestep_idx]  # Corresponding year
             field_key = self.field_keys[field_idx]
             
+            # Diagnostic mode: enable for PERMI field or when issues detected
+            # Enable debug for PERMI field to help diagnose layer/residual issues
+            debug_mode = (field_key == 'PERMI')
+            
             # Get layer mask (fix: use case_idx, not actual_case_idx)
-            layer_mask = self._get_layer_mask(case_idx, actual_layer)
+            layer_mask = self._get_layer_mask(case_idx, actual_layer, debug=debug_mode)
             
             # Get data
             pred_data = self.state_pred[case_idx, actual_timestep, field_idx, :, :, actual_layer].cpu().detach().numpy()
             true_data = self.state_seq_true_aligned[case_idx, field_idx, actual_timestep, :, :, actual_layer].cpu().numpy()
             
+            if debug_mode:
+                print(f"\n{'='*70}")
+                print(f"🔍 SPATIAL PLOT DIAGNOSTIC - {self.field_names[field_idx]} (Field Key: {field_key})")
+                print(f"{'='*70}")
+                print(f"Case: {case_idx} (actual: {actual_case_idx}), Layer: {actual_layer}, Timestep: {actual_timestep} (Year: {actual_year})")
+                print(f"Pred data shape: {pred_data.shape}, range: [{np.nanmin(pred_data):.6f}, {np.nanmax(pred_data):.6f}]")
+                print(f"True data shape: {true_data.shape}, range: [{np.nanmin(true_data):.6f}, {np.nanmax(true_data):.6f}]")
+                print(f"Pred NaN count: {np.sum(np.isnan(pred_data))}, Inf count: {np.sum(np.isinf(pred_data))}")
+                print(f"True NaN count: {np.sum(np.isnan(true_data))}, Inf count: {np.sum(np.isinf(true_data))}")
+            
             # Denormalize
-            pred_data_denorm = self._denormalize_field_data(pred_data, field_key)
-            true_data_denorm = self._denormalize_field_data(true_data, field_key)
+            pred_data_denorm = self._denormalize_field_data(pred_data, field_key, debug=debug_mode)
+            true_data_denorm = self._denormalize_field_data(true_data, field_key, debug=debug_mode)
+            
+            if debug_mode:
+                print(f"\nAfter denormalization:")
+                # Use scientific notation for very small values
+                pred_min, pred_max = np.nanmin(pred_data_denorm), np.nanmax(pred_data_denorm)
+                true_min, true_max = np.nanmin(true_data_denorm), np.nanmax(true_data_denorm)
+                if abs(pred_min) < 1e-6 or abs(pred_max) < 1e-6:
+                    print(f"Pred denorm range: [{pred_min:.2e}, {pred_max:.2e}]")
+                else:
+                    print(f"Pred denorm range: [{pred_min:.6f}, {pred_max:.6f}]")
+                if abs(true_min) < 1e-6 or abs(true_max) < 1e-6:
+                    print(f"True denorm range: [{true_min:.2e}, {true_max:.2e}]")
+                else:
+                    print(f"True denorm range: [{true_min:.6f}, {true_max:.6f}]")
+                print(f"Pred denorm NaN: {np.sum(np.isnan(pred_data_denorm))}, Inf: {np.sum(np.isinf(pred_data_denorm))}")
+                print(f"True denorm NaN: {np.sum(np.isnan(true_data_denorm))}, Inf: {np.sum(np.isinf(true_data_denorm))}")
             
             # Apply masking
             pred_data_masked = np.where(layer_mask, pred_data_denorm, np.nan)
             true_data_masked = np.where(layer_mask, true_data_denorm, np.nan)
             
+            if debug_mode:
+                print(f"\nAfter masking:")
+                pred_valid = pred_data_masked[~np.isnan(pred_data_masked)]
+                true_valid = true_data_masked[~np.isnan(true_data_masked)]
+                print(f"Pred masked - Valid cells: {len(pred_valid)}/{pred_data_masked.size}")
+                if len(pred_valid) > 0:
+                    pred_min, pred_max = np.min(pred_valid), np.max(pred_valid)
+                    if abs(pred_min) < 1e-6 or abs(pred_max) < 1e-6:
+                        print(f"   Range: [{pred_min:.2e}, {pred_max:.2e}]")
+                    else:
+                        print(f"   Range: [{pred_min:.6f}, {pred_max:.6f}]")
+                else:
+                    print(f"   ⚠️ WARNING: NO VALID PRED DATA AFTER MASKING!")
+                print(f"True masked - Valid cells: {len(true_valid)}/{true_data_masked.size}")
+                if len(true_valid) > 0:
+                    true_min, true_max = np.min(true_valid), np.max(true_valid)
+                    if abs(true_min) < 1e-6 or abs(true_max) < 1e-6:
+                        print(f"   Range: [{true_min:.2e}, {true_max:.2e}]")
+                    else:
+                        print(f"   Range: [{true_min:.6f}, {true_max:.6f}]")
+                else:
+                    print(f"   ⚠️ WARNING: NO VALID TRUE DATA AFTER MASKING!")
+            
             # Calculate RESIDUAL (difference between predicted and true)
             # Residual: pred - true (positive = overprediction, negative = underprediction)
-            residual = pred_data_denorm - true_data_denorm
+            # Only calculate residual where both pred and true are valid (not NaN/Inf)
+            # This prevents NaN propagation from denormalization issues
+            valid_for_residual = ~(np.isnan(pred_data_denorm) | np.isnan(true_data_denorm) | 
+                                  np.isinf(pred_data_denorm) | np.isinf(true_data_denorm))
+            residual = np.full_like(pred_data_denorm, np.nan)  # Initialize with NaN
+            residual[valid_for_residual] = pred_data_denorm[valid_for_residual] - true_data_denorm[valid_for_residual]
             
-            # Apply masking to residual
-            residual_masked = np.where(layer_mask, residual, np.nan)
+            if debug_mode:
+                print(f"\nResidual calculation:")
+                print(f"Valid cells for residual (before masking): {np.sum(valid_for_residual)}/{residual.size}")
+                if np.sum(valid_for_residual) > 0:
+                    valid_residual_before_mask = residual[valid_for_residual]
+                    res_min, res_max = np.nanmin(valid_residual_before_mask), np.nanmax(valid_residual_before_mask)
+                    if abs(res_min) < 1e-6 or abs(res_max) < 1e-6:
+                        print(f"Residual range (valid cells, before masking): [{res_min:.2e}, {res_max:.2e}]")
+                    else:
+                        print(f"Residual range (valid cells, before masking): [{res_min:.6f}, {res_max:.6f}]")
+                print(f"Residual NaN count: {np.sum(np.isnan(residual))}, Inf count: {np.sum(np.isinf(residual))}")
+            
+            # Apply masking to residual (combine with layer mask and validity check)
+            residual_masked = np.where(layer_mask & valid_for_residual, residual, np.nan)
+            
+            if debug_mode:
+                residual_valid = residual_masked[~np.isnan(residual_masked)]
+                print(f"Residual masked - Valid cells: {len(residual_valid)}/{residual_masked.size}")
+                if len(residual_valid) > 0:
+                    print(f"   Range: [{np.min(residual_valid):.6f}, {np.max(residual_valid):.6f}]")
+                    print(f"   Mean: {np.mean(residual_valid):.6f}, Std: {np.std(residual_valid):.6f}")
+                else:
+                    print(f"   ⚠️ WARNING: NO VALID RESIDUAL DATA AFTER MASKING!")
+                print(f"{'='*70}\n")
             
             # Enhanced color scaling with outlier handling (matching interactive_h5_visualizer.py approach)
             def get_optimal_color_range(data):
@@ -1107,8 +1368,18 @@ class InteractiveVisualizationDashboard:
                 abs_max = max(np.abs(np.percentile(valid_residual_data, [2, 98])))
                 residual_vmax = max(abs_max, np.abs(valid_residual_data).max() * 0.95, 0.01)
                 residual_vmin = -residual_vmax  # Symmetric around zero
+                
+                if debug_mode:
+                    print(f"🔍 Residual Color Scaling:")
+                    print(f"   Valid residual data points: {len(valid_residual_data)}")
+                    print(f"   Residual range: [{np.min(valid_residual_data):.6f}, {np.max(valid_residual_data):.6f}]")
+                    print(f"   Color range: [{residual_vmin:.6f}, {residual_vmax:.6f}]")
             else:
                 residual_vmin, residual_vmax = -1.0, 1.0
+                if debug_mode:
+                    print(f"🔍 Residual Color Scaling:")
+                    print(f"   ⚠️ WARNING: No valid residual data! Using default range: [{residual_vmin}, {residual_vmax}]")
+                    print(f"   This will result in an empty residual plot.")
             
             # Create high-resolution plot with modern styling
             plt.style.use('default')  # Clean style
@@ -1123,13 +1394,24 @@ class InteractiveVisualizationDashboard:
             cmap.set_bad('white', alpha=0.3)  # Semi-transparent for masked cells
             
             # PREDICTED PANEL
-            im1 = axes[0].imshow(pred_data_masked.T,  # Transpose for proper orientation
-                               origin='lower',  # Proper grid orientation
-                               cmap=cmap, 
-                               vmin=unified_vmin, 
-                               vmax=unified_vmax,
-                               aspect='equal',  # Equal aspect ratio
-                               interpolation='bilinear')  # Smooth interpolation
+            # Check if we have valid predicted data
+            pred_valid_count = len(pred_data_masked[~np.isnan(pred_data_masked)])
+            if pred_valid_count > 0:
+                im1 = axes[0].imshow(pred_data_masked.T,  # Transpose for proper orientation
+                                   origin='lower',  # Proper grid orientation
+                                   cmap=cmap, 
+                                   vmin=unified_vmin, 
+                                   vmax=unified_vmax,
+                                   aspect='equal',  # Equal aspect ratio
+                                   interpolation='bilinear')  # Smooth interpolation
+            else:
+                # No valid predicted data - show message
+                axes[0].text(0.5, 0.5, f'No Predicted Data\n\nLayer {actual_layer} has no valid predictions\n(check denormalization and masking)', 
+                            ha='center', va='center', fontsize=12, fontweight='bold',
+                            transform=axes[0].transAxes, 
+                            bbox=dict(boxstyle='round', facecolor='orange', alpha=0.7))
+                # Create dummy image for colorbar (won't be visible but prevents errors)
+                im1 = axes[0].imshow(np.zeros((self.Nx, self.Ny)), cmap=cmap, vmin=0, vmax=1, alpha=0)
             
             axes[0].set_title('Predicted', fontsize=16, fontweight='bold', pad=15)
             axes[0].set_xlabel('I Index', fontsize=14, fontweight='bold')
@@ -1151,13 +1433,24 @@ class InteractiveVisualizationDashboard:
                 label.set_fontweight('bold')
             
             # TRUE PANEL
-            im2 = axes[1].imshow(true_data_masked.T,  # Transpose for proper orientation
-                               origin='lower',  # Proper grid orientation
-                               cmap=cmap, 
-                               vmin=unified_vmin, 
-                               vmax=unified_vmax,
-                               aspect='equal',  # Equal aspect ratio
-                               interpolation='bilinear')  # Smooth interpolation
+            # Check if we have valid true data
+            true_valid_count = len(true_data_masked[~np.isnan(true_data_masked)])
+            if true_valid_count > 0:
+                im2 = axes[1].imshow(true_data_masked.T,  # Transpose for proper orientation
+                                   origin='lower',  # Proper grid orientation
+                                   cmap=cmap, 
+                                   vmin=unified_vmin, 
+                                   vmax=unified_vmax,
+                                   aspect='equal',  # Equal aspect ratio
+                                   interpolation='bilinear')  # Smooth interpolation
+            else:
+                # No valid true data - show message
+                axes[1].text(0.5, 0.5, f'No True Data\n\nLayer {actual_layer} has no valid true values\n(check denormalization and masking)', 
+                            ha='center', va='center', fontsize=12, fontweight='bold',
+                            transform=axes[1].transAxes, 
+                            bbox=dict(boxstyle='round', facecolor='orange', alpha=0.7))
+                # Create dummy image for colorbar (won't be visible but prevents errors)
+                im2 = axes[1].imshow(np.zeros((self.Nx, self.Ny)), cmap=cmap, vmin=0, vmax=1, alpha=0)
             
             axes[1].set_title('True', fontsize=16, fontweight='bold', pad=15)
             axes[1].set_xlabel('I Index', fontsize=14, fontweight='bold')
@@ -1186,13 +1479,52 @@ class InteractiveVisualizationDashboard:
             residual_cmap = plt.cm.RdBu_r.copy()  # Red-Blue diverging colormap (reversed)
             residual_cmap.set_bad('white', alpha=0.3)  # White for masked/inactive cells
             
-            im3 = axes[2].imshow(residual_masked.T,  # Transpose for proper orientation
-                               origin='lower',  # Proper grid orientation
-                               cmap=residual_cmap, 
-                               vmin=residual_vmin, 
-                               vmax=residual_vmax,
-                               aspect='equal',  # Equal aspect ratio
-                               interpolation='bilinear')  # Smooth interpolation
+            # Check if we have valid residual data to plot
+            valid_residual_count = len(valid_residual_data)
+            if valid_residual_count > 0:
+                im3 = axes[2].imshow(residual_masked.T,  # Transpose for proper orientation
+                                   origin='lower',  # Proper grid orientation
+                                   cmap=residual_cmap, 
+                                   vmin=residual_vmin, 
+                                   vmax=residual_vmax,
+                                   aspect='equal',  # Equal aspect ratio
+                                   interpolation='bilinear')  # Smooth interpolation
+                
+                # Enhanced colorbar for residual - exact height match with plot area
+                cbar3 = plt.colorbar(im3, ax=axes[2], shrink=0.7, aspect=30, pad=0.02)
+                cbar3.set_label(f'Residual (Pred - True)', 
+                               rotation=90, labelpad=15, fontsize=14, fontweight='bold')
+                cbar3.ax.tick_params(labelsize=12, width=1.5)
+                # Make colorbar tick labels bold
+                for label in cbar3.ax.get_yticklabels():
+                    label.set_fontweight('bold')
+            else:
+                # No valid data - show informative message instead of empty plot
+                active_cells_in_mask = np.sum(layer_mask)
+                total_cells = layer_mask.size
+                pred_valid_count = len(pred_data_masked[~np.isnan(pred_data_masked)])
+                true_valid_count = len(true_data_masked[~np.isnan(true_data_masked)])
+                
+                # Determine reason for empty residual
+                if active_cells_in_mask == 0:
+                    reason = f"Layer {actual_layer} has no active cells\n(all cells are inactive)"
+                elif pred_valid_count == 0 and true_valid_count == 0:
+                    reason = f"All data invalid after denormalization\n(check normalization parameters)"
+                elif pred_valid_count == 0:
+                    reason = f"Predicted data invalid after denormalization\n(check predicted values)"
+                elif true_valid_count == 0:
+                    reason = f"True data invalid after denormalization\n(check true values)"
+                else:
+                    reason = f"Residual calculation failed\n({pred_valid_count} pred, {true_valid_count} true valid cells)"
+                
+                axes[2].text(0.5, 0.5, f'No Residual Data\n\n{reason}\n\nActive cells in mask: {active_cells_in_mask}/{total_cells}', 
+                            ha='center', va='center', fontsize=12, fontweight='bold',
+                            transform=axes[2].transAxes, 
+                            bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
+                if debug_mode:
+                    print(f"   ⚠️ Residual plot: No valid data to display")
+                    print(f"      Reason: {reason}")
+                    print(f"      Active cells in mask: {active_cells_in_mask}/{total_cells}")
             
             axes[2].set_title('Residual (Pred - True)', fontsize=16, fontweight='bold', pad=15)
             axes[2].set_xlabel('I Index', fontsize=14, fontweight='bold')
@@ -1204,14 +1536,7 @@ class InteractiveVisualizationDashboard:
             for label in axes[2].get_yticklabels():
                 label.set_fontweight('bold')
             
-            # Enhanced colorbar for residual - exact height match with plot area
-            cbar3 = plt.colorbar(im3, ax=axes[2], shrink=0.7, aspect=30, pad=0.02)
-            cbar3.set_label(f'Residual (Pred - True)', 
-                            rotation=90, labelpad=15, fontsize=14, fontweight='bold')
-            cbar3.ax.tick_params(labelsize=12, width=1.5)
-            # Make colorbar tick labels bold
-            for label in cbar3.ax.get_yticklabels():
-                label.set_fontweight('bold')
+            # Note: Colorbar is already created above in the if/else block, don't create duplicate
             
             # Add well location overlays
             self._add_well_overlays(axes, actual_layer)
@@ -1484,7 +1809,7 @@ class InteractiveVisualizationDashboard:
         )
         
         # Timeseries graph dropdown (shared between training/testing)
-        timeseries_options = ['BHP (All Injectors)', 'Gas Production (All Producers)', 'Water Production (All Producers)']
+        timeseries_options = ['BHP (All Injectors)', 'Energy Production (All Producers)', 'Water Production (All Producers)']
         self.timeseries_graph_dropdown = widgets.Dropdown(
             options=timeseries_options,
             value=timeseries_options[0],
@@ -1566,7 +1891,7 @@ class InteractiveVisualizationDashboard:
         def update_well_dropdown_options(group_name):
             obs_groups_map = {
                 'BHP (All Injectors)': (list(range(3)), ['BHP1', 'BHP2', 'BHP3']),
-                'Gas Production (All Producers)': (list(range(3, 6)), ['Gas Prod1', 'Gas Prod2', 'Gas Prod3']),
+                'Energy Production (All Producers)': (list(range(3, 6)), ['Energy Prod1', 'Energy Prod2', 'Energy Prod3']),
                 'Water Production (All Producers)': (list(range(6, 9)), ['Water Prod1', 'Water Prod2', 'Water Prod3'])
             }
             
@@ -1949,7 +2274,7 @@ class InteractiveVisualizationDashboard:
                 selected_group_name = self.timeseries_graph_dropdown.value
                 obs_groups_map = {
                     'BHP (All Injectors)': (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'),
-                    'Gas Production (All Producers)': (list(range(3, 6)), ['Gas Prod1', 'Gas Prod2', 'Gas Prod3'], 'bbl/day'),
+                    'Energy Production (All Producers)': (list(range(3, 6)), ['Energy Prod1', 'Energy Prod2', 'Energy Prod3'], 'BTU/Day'),
                     'Water Production (All Producers)': (list(range(6, 9)), ['Water Prod1', 'Water Prod2', 'Water Prod3'], 'bbl/day')
                 }
                 obs_indices, well_names, unit = obs_groups_map.get(selected_group_name, (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'))
@@ -2094,7 +2419,7 @@ class InteractiveVisualizationDashboard:
                 selected_group_name = self.timeseries_graph_dropdown.value
                 obs_groups_map = {
                     'BHP (All Injectors)': (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'),
-                    'Gas Production (All Producers)': (list(range(3, 6)), ['Gas Prod1', 'Gas Prod2', 'Gas Prod3'], 'bbl/day'),
+                    'Energy Production (All Producers)': (list(range(3, 6)), ['Energy Prod1', 'Energy Prod2', 'Energy Prod3'], 'BTU/Day'),
                     'Water Production (All Producers)': (list(range(6, 9)), ['Water Prod1', 'Water Prod2', 'Water Prod3'], 'bbl/day')
                 }
                 obs_indices, well_names, unit = obs_groups_map.get(selected_group_name, (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'))
@@ -2371,24 +2696,10 @@ class InteractiveVisualizationDashboard:
         if obs_idx < 3:  # BHP data
             if 'BHP' in norm_params:
                 params = norm_params['BHP']
-                # Convert string values to floats if needed
-                if params and params.get('type') != 'none':
-                    if params.get('type') == 'log':
-                        if isinstance(params.get('log_min'), str):
-                            params = params.copy()
-                            params['log_min'] = float(params['log_min'])
-                            params['log_max'] = float(params['log_max'])
-                            params['epsilon'] = float(params.get('epsilon', 1e-8)) if isinstance(params.get('epsilon', 1e-8), str) else params.get('epsilon', 1e-8)
-                            params['data_shift'] = float(params.get('data_shift', 0)) if isinstance(params.get('data_shift', 0), str) else params.get('data_shift', 0)
-                    else:
-                        if isinstance(params.get('min'), str):
-                            params = params.copy()
-                            params['min'] = float(params['min'])
-                            params['max'] = float(params['max'])
-        elif obs_idx < 6:  # Gas production (indices 3-5)
-            if 'GASRATRC' in norm_params:
-                params = norm_params['GASRATRC']
-        else:  # Water production (indices 6-8)
+        elif obs_idx < 6:  # Energy production
+            if 'ENERGYRATE' in norm_params:
+                params = norm_params['ENERGYRATE']
+        else:  # Water production
             if 'WATRATRC' in norm_params:
                 params = norm_params['WATRATRC']
         
@@ -2396,18 +2707,18 @@ class InteractiveVisualizationDashboard:
             return data_flat
         
         if params.get('type') == 'log':
-            log_min = float(params['log_min']) if isinstance(params['log_min'], str) else params['log_min']
-            log_max = float(params['log_max']) if isinstance(params['log_max'], str) else params['log_max']
-            epsilon = float(params.get('epsilon', 1e-8)) if isinstance(params.get('epsilon', 1e-8), str) else params.get('epsilon', 1e-8)
-            data_shift = float(params.get('data_shift', 0)) if isinstance(params.get('data_shift', 0), str) else params.get('data_shift', 0)
+            log_min = params['log_min']
+            log_max = params['log_max']
+            epsilon = params.get('epsilon', 1e-8)
+            data_shift = params.get('data_shift', 0)
             
             # Vectorized log denormalization
             data_log = data_flat * (log_max - log_min) + log_min
             return np.exp(data_log) - epsilon + data_shift
         else:
             # Standard min-max denormalization
-            obs_min = float(params['min']) if isinstance(params['min'], str) else params['min']
-            obs_max = float(params['max']) if isinstance(params['max'], str) else params['max']
+            obs_min = params['min']
+            obs_max = params['max']
             return data_flat * (obs_max - obs_min) + obs_min
     
     def _calculate_overall_spatial_metrics_optimized(self, case_indices=None, selected_metrics=None, 
@@ -3283,6 +3594,22 @@ class InteractiveVisualizationDashboard:
             # Use regular decimal format for values < 100
             return f"{value:.2f}"
     
+    @staticmethod
+    def _format_large_metric(value):
+        """
+        Format large metric values (RMSE, MAE) in scientific notation with 2 decimal places.
+        
+        Args:
+            value: Numeric value to format
+            
+        Returns:
+            Formatted string in scientific notation (e.g., "2.10e+11")
+        """
+        if value == 0.0:
+            return "0.00e+00"
+        else:
+            return f"{value:.2e}"
+    
     def _plot_overall_spatial_metric(self, ax, field_idx, field_name, metrics, all_true, all_pred, selected_metrics=None, 
                                      layer_data_dict=None, fig=None):
         """
@@ -3419,9 +3746,9 @@ class InteractiveVisualizationDashboard:
         if 'mse' in selected_metrics and 'mse' in plot_metrics:
             metric_parts.append(f"MSE = {self._format_metric_value(plot_metrics['mse'])}")
         if 'rmse' in selected_metrics and 'rmse' in plot_metrics:
-            metric_parts.append(f"RMSE = {self._format_metric_value(plot_metrics['rmse'])}")
+            metric_parts.append(f"RMSE = {self._format_large_metric(plot_metrics['rmse'])}")
         if 'mae' in selected_metrics and 'mae' in plot_metrics:
-            metric_parts.append(f"MAE = {self._format_metric_value(plot_metrics['mae'])}")
+            metric_parts.append(f"MAE = {self._format_large_metric(plot_metrics['mae'])}")
         
         if metric_parts:
             title += ", ".join(metric_parts)
@@ -3561,9 +3888,9 @@ class InteractiveVisualizationDashboard:
         if 'mse' in selected_metrics and 'mse' in plot_metrics:
             metric_parts.append(f"MSE = {self._format_metric_value(plot_metrics['mse'])}")
         if 'rmse' in selected_metrics and 'rmse' in plot_metrics:
-            metric_parts.append(f"RMSE = {self._format_metric_value(plot_metrics['rmse'])}")
+            metric_parts.append(f"RMSE = {self._format_large_metric(plot_metrics['rmse'])}")
         if 'mae' in selected_metrics and 'mae' in plot_metrics:
-            metric_parts.append(f"MAE = {self._format_metric_value(plot_metrics['mae'])}")
+            metric_parts.append(f"MAE = {self._format_large_metric(plot_metrics['mae'])}")
         
         if metric_parts:
             title += ", ".join(metric_parts)
@@ -3801,15 +4128,14 @@ class InteractiveVisualizationDashboard:
                         # Create the plot
                         fig = self._create_animation_frame_with_capture(case_idx, layer_idx, field_idx, timestep_idx)
                         
-                        # Capture frame for GIF (without displaying in console)
-                        if PIL_AVAILABLE and fig:
-                            buf = io.BytesIO()
-                            fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-                            buf.seek(0)
-                            gif_frames.append(Image.open(buf))
-                        elif not PIL_AVAILABLE:
-                            self.animation_status.value = 'Animation Status: Error - PIL/Pillow not available for GIF creation'
-                            print("⚠️ Warning: PIL/Pillow not available. Cannot create GIF frames.")
+                        # Display the plot
+                        display(fig)
+                        
+                        # Capture frame for GIF
+                        buf = io.BytesIO()
+                        fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+                        buf.seek(0)
+                        gif_frames.append(Image.open(buf))
                         
                         # Close the figure to prevent memory issues
                         try:
@@ -3823,23 +4149,19 @@ class InteractiveVisualizationDashboard:
                 
                 # Create and save GIF if animation completed
                 if self.animation_running and len(gif_frames) > 0:
-                    if PIL_AVAILABLE:
-                        self.animation_status.value = 'Animation Status: Saving GIF...'
-                        
-                        # Create GIF with proper duration
-                        gif_frames[0].save(
-                            gif_filename,
-                            save_all=True,
-                            append_images=gif_frames[1:],
-                            duration=int(speed * 1000),  # Convert to milliseconds
-                            loop=0  # Infinite loop
-                        )
-                        
-                        self.animation_status.value = f'Animation Status: Completed - GIF saved: {gif_filename.name}'
-                        print(f"🎬 Animation GIF saved: {gif_filename}")
-                    else:
-                        self.animation_status.value = 'Animation Status: Error - PIL/Pillow not available for GIF creation'
-                        print("❌ Error: PIL/Pillow not available. Cannot save GIF file.")
+                    self.animation_status.value = 'Animation Status: Saving GIF...'
+                    
+                    # Create GIF with proper duration
+                    gif_frames[0].save(
+                        gif_filename,
+                        save_all=True,
+                        append_images=gif_frames[1:],
+                        duration=int(speed * 1000),  # Convert to milliseconds
+                        loop=0  # Infinite loop
+                    )
+                    
+                    self.animation_status.value = f'Animation Status: Completed - GIF saved: {gif_filename.name}'
+                    print(f"🎬 Animation GIF saved: {gif_filename}")
                 else:
                     if len(gif_frames) == 0:
                         self.animation_status.value = 'Animation Status: Stopped - No frames captured'

@@ -84,11 +84,27 @@ class ModelEvaluationMetrics:
         if obs_idx < 3:
             return 'psi'       # BHP observations (indices 0-2)
         elif obs_idx < 6:
-            return 'bbl/day'   # Gas production observations (indices 3-5)
+            return 'BTU/Day'   # Energy production observations (indices 3-5)
         elif obs_idx < 9:
             return 'bbl/day'   # Water production observations (indices 6-8)
         else:
             return 'units'     # Generic fallback for additional observations
+    
+    @staticmethod
+    def _format_large_metric(value):
+        """
+        Format large metric values (RMSE, MAE) in scientific notation with 2 decimal places.
+        
+        Args:
+            value: Numeric value to format
+            
+        Returns:
+            Formatted string in scientific notation (e.g., "2.10e+11")
+        """
+        if value == 0.0:
+            return "0.00e+00"
+        else:
+            return f"{value:.2e}"
     
     def _compute_metrics(self, y_true, y_pred, epsilon=None, filter_negative_predictions=True, selected_metrics=None):
         """
@@ -328,29 +344,29 @@ class ModelEvaluationMetrics:
                         true = np.exp(true_log) - epsilon + data_shift
                     else:
                         # Standard min-max denormalization
-                        obs_min = float(params['min']) if isinstance(params['min'], str) else params['min']
-                        obs_max = float(params['max']) if isinstance(params['max'], str) else params['max']
+                        obs_min = params['min']
+                        obs_max = params['max']
                         pred = pred * (obs_max - obs_min) + obs_min
                         true = true * (obs_max - obs_min) + obs_min
-            elif obs_idx < 6:  # Gas production (indices 3-5)
-                if 'GASRATRC' in norm_params:
-                    params = norm_params['GASRATRC']
+            elif obs_idx < 6:  # Energy production (indices 3-5)
+                if 'ENERGYRATE' in norm_params:
+                    params = norm_params['ENERGYRATE']
                     if params.get('type') == 'none':
                         pass  # No normalization was applied, use data as-is
                     elif params.get('type') == 'log':
                         # Reverse log normalization
-                        log_min = float(params['log_min']) if isinstance(params['log_min'], str) else params['log_min']
-                        log_max = float(params['log_max']) if isinstance(params['log_max'], str) else params['log_max']
+                        log_min = params['log_min']
+                        log_max = params['log_max']
                         pred_log = pred * (log_max - log_min) + log_min
                         true_log = true * (log_max - log_min) + log_min
-                        epsilon = float(params.get('epsilon', 1e-8)) if isinstance(params.get('epsilon', 1e-8), str) else params.get('epsilon', 1e-8)
-                        data_shift = float(params.get('data_shift', 0)) if isinstance(params.get('data_shift', 0), str) else params.get('data_shift', 0)
+                        epsilon = params.get('epsilon', 1e-8)
+                        data_shift = params.get('data_shift', 0)
                         pred = np.exp(pred_log) - epsilon + data_shift
                         true = np.exp(true_log) - epsilon + data_shift
                     else:
                         # Standard min-max denormalization
-                        obs_min = float(params['min']) if isinstance(params['min'], str) else params['min']
-                        obs_max = float(params['max']) if isinstance(params['max'], str) else params['max']
+                        obs_min = params['min'] 
+                        obs_max = params['max']
                         pred = pred * (obs_max - obs_min) + obs_min
                         true = true * (obs_max - obs_min) + obs_min
             else:  # Water production (indices 6-8)
@@ -360,18 +376,18 @@ class ModelEvaluationMetrics:
                         pass  # No normalization was applied, use data as-is
                     elif params.get('type') == 'log':
                         # Reverse log normalization
-                        log_min = float(params['log_min']) if isinstance(params['log_min'], str) else params['log_min']
-                        log_max = float(params['log_max']) if isinstance(params['log_max'], str) else params['log_max']
+                        log_min = params['log_min']
+                        log_max = params['log_max']
                         pred_log = pred * (log_max - log_min) + log_min
                         true_log = true * (log_max - log_min) + log_min
-                        epsilon = float(params.get('epsilon', 1e-8)) if isinstance(params.get('epsilon', 1e-8), str) else params.get('epsilon', 1e-8)
-                        data_shift = float(params.get('data_shift', 0)) if isinstance(params.get('data_shift', 0), str) else params.get('data_shift', 0)
+                        epsilon = params.get('epsilon', 1e-8)
+                        data_shift = params.get('data_shift', 0)
                         pred = np.exp(pred_log) - epsilon + data_shift
                         true = np.exp(true_log) - epsilon + data_shift
                     else:
                         # Standard min-max denormalization
-                        obs_min = float(params['min']) if isinstance(params['min'], str) else params['min']
-                        obs_max = float(params['max']) if isinstance(params['max'], str) else params['max']
+                        obs_min = params['min']
+                        obs_max = params['max']
                         pred = pred * (obs_max - obs_min) + obs_min
                         true = true * (obs_max - obs_min) + obs_min
         
@@ -613,7 +629,7 @@ class ModelEvaluationMetrics:
         
         # Add title with metrics - bold formatting
         title = f"{field_name} - Case {case_idx}, Layer {layer_idx}, Time {timestep_idx}\n"
-        title += f"R² = {metrics['r2']:.2f}, RMSE = {metrics['rmse']:.2f}, MAE = {metrics['mae']:.2f}, APE = {metrics['ape']:.2f}%"
+        title += f"R² = {metrics['r2']:.2f}, RMSE = {self._format_large_metric(metrics['rmse'])}, MAE = {self._format_large_metric(metrics['mae'])}, APE = {metrics['ape']:.2f}%"
         ax.set_title(title, fontsize=12, fontweight='bold')
         
         return ax
@@ -644,24 +660,24 @@ class ModelEvaluationMetrics:
                 if 'BHP' in norm_params:
                     params = norm_params['BHP']
                     if params.get('type') != 'none':  # Only denormalize if not 'none'
-                        obs_min = float(params['min']) if isinstance(params['min'], str) else params['min']
-                        obs_max = float(params['max']) if isinstance(params['max'], str) else params['max']
+                        obs_min = params['min']
+                        obs_max = params['max']
                         pred = pred * (obs_max - obs_min) + obs_min
                         true = true * (obs_max - obs_min) + obs_min
-            elif obs_idx < 6:  # Gas production (indices 3-5)
-                if 'GASRATRC' in norm_params:
-                    params = norm_params['GASRATRC']
+            elif obs_idx < 6:  # Energy production (indices 3-5)
+                if 'ENERGYRATE' in norm_params:
+                    params = norm_params['ENERGYRATE']
                     if params.get('type') != 'none':  # Only denormalize if not 'none'
-                        obs_min = float(params['min']) if isinstance(params['min'], str) else params['min']
-                        obs_max = float(params['max']) if isinstance(params['max'], str) else params['max']
+                        obs_min = params['min'] 
+                        obs_max = params['max']
                         pred = pred * (obs_max - obs_min) + obs_min
                         true = true * (obs_max - obs_min) + obs_min
             else:  # Water production (indices 6-8)
                 if 'WATRATRC' in norm_params:
                     params = norm_params['WATRATRC']
                     if params.get('type') != 'none':  # Only denormalize if not 'none'
-                        obs_min = float(params['min']) if isinstance(params['min'], str) else params['min']
-                        obs_max = float(params['max']) if isinstance(params['max'], str) else params['max']
+                        obs_min = params['min']
+                        obs_max = params['max']
                         pred = pred * (obs_max - obs_min) + obs_min
                         true = true * (obs_max - obs_min) + obs_min
         
@@ -728,7 +744,7 @@ class ModelEvaluationMetrics:
         
         # Add title with metrics - bold formatting
         title = f"{obs_name} - Case {case_idx}\n"
-        title += f"R² = {metrics['r2']:.2f}, RMSE = {metrics['rmse']:.2f}, MAE = {metrics['mae']:.2f}, APE = {metrics['ape']:.2f}%"
+        title += f"R² = {metrics['r2']:.2f}, RMSE = {self._format_large_metric(metrics['rmse'])}, MAE = {self._format_large_metric(metrics['mae'])}, APE = {metrics['ape']:.2f}%"
         ax.set_title(title, fontsize=12, fontweight='bold')
         
         return ax

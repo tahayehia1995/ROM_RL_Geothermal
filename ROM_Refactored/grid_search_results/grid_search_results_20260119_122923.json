@@ -1,0 +1,45 @@
+{
+  "total_runs": 1,
+  "completed_runs": 1,
+  "successful_runs": 1,
+  "failed_runs": 0,
+  "results": [
+    {
+      "run_id": "run0001_bs128_ld128_ns2_ch2_schfix_rb3_ehd300-300-300_dlwFalse_advFalse",
+      "run_name": "bs128_ld128_ns2_ch2_schfix_rb3_ehd300-300-300",
+      "status": "success",
+      "batch_size": 128,
+      "n_steps": 2,
+      "n_channels": 2,
+      "latent_dim": 128,
+      "lr_scheduler_type": "fixed",
+      "residual_blocks": 3,
+      "encoder_hidden_dims": [
+        300,
+        300,
+        300
+      ],
+      "dynamic_loss_weighting_enable": false,
+      "dynamic_loss_weighting_method": "gradnorm",
+      "adversarial_enable": false,
+      "channel_names": [
+        "TEMP",
+        "PRES"
+      ],
+      "learning_rate": 0.0001,
+      "lr_scheduler": "constant",
+      "data_file": "processed_data_nstates2_ncontrols6_nobs9_nsteps2_ntrain23925_neval7975_ch2_wells15_20260119_101800.h5",
+      "final_loss": 0.011268635280430317,
+      "final_reconstruction_loss": 0.005195681005716324,
+      "final_transition_loss": 0.0006114263087511063,
+      "final_observation_loss": 0.0002658470766618848,
+      "best_loss": 0.0010710597271099687,
+      "best_observation_loss": 1000000000.0,
+      "best_reconstruction_loss": 1000000000.0,
+      "encoder": "./saved_models/grid_search/e2co_encoder_grid_bs128_ld128_ns2_ch2_run0001_bs128_ld128_ns2_ch2_schfix_rb3_ehd300-300-300_dlwFalse_advFalse_bs128_ld128_ns2_ch2.h5",
+      "decoder": "./saved_models/grid_search/e2co_decoder_grid_bs128_ld128_ns2_ch2_run0001_bs128_ld128_ns2_ch2_schfix_rb3_ehd300-300-300_dlwFalse_advFalse_bs128_ld128_ns2_ch2.h5",
+      "transition": "./saved_models/grid_search/e2co_transition_grid_bs128_ld128_ns2_ch2_run0001_bs128_ld128_ns2_ch2_schfix_rb3_ehd300-300-300_dlwFalse_advFalse_bs128_ld128_ns2_ch2.h5"
+    }
+  ],
+  "failed": []
+}

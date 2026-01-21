@@ -766,25 +766,25 @@ class ScientificVisualization:
                 ax.set_title(f'{well_name} - BHP Control Profile (No Data)', fontsize=16, fontweight='bold')
             
         else:  # Injector
-            # Plot gas injection rate in ft³/day (already physical units)
+            # Plot energy injection rate in BTU/Day (already physical units)
             gas_key = f"{well_name}_Gas_ft3day"
             gas_values = [action.get(gas_key, 0) for action in physical_actions]
             
             if any(val > 0 for val in gas_values):
                 ax.plot(time_values, gas_values, 'g-', marker='o', markersize=4,
-                       label='Gas Injection', linewidth=2)
-                ax.set_ylabel('Gas Injection (ft³/day)', fontsize=14, color='green')
+                       label='Energy Injection', linewidth=2)
+                ax.set_ylabel('Energy Injection (BTU/Day)', fontsize=14, color='green')
                 ax.tick_params(axis='y', labelcolor='green')
                 
                 # Add reasonable range shading
                 gas_min = min(gas_values) * 0.95 if gas_values else 0
                 gas_max = max(gas_values) * 1.05 if gas_values else 10000000
-                ax.axhspan(gas_min, gas_max, alpha=0.1, color='green', label='Gas Injection Range')
-                ax.set_title(f'{well_name} - Gas Injection Profile (Physical Units)', fontsize=16, fontweight='bold')
+                ax.axhspan(gas_min, gas_max, alpha=0.1, color='green', label='Energy Injection Range')
+                ax.set_title(f'{well_name} - Energy Injection Profile (Physical Units)', fontsize=16, fontweight='bold')
             else:
-                ax.text(0.5, 0.5, 'No gas injection data available',
+                ax.text(0.5, 0.5, 'No energy injection data available',
                        transform=ax.transAxes, ha='center', va='center', fontsize=14)
-                ax.set_title(f'{well_name} - Gas Injection Profile (No Data)', fontsize=16, fontweight='bold')
+                ax.set_title(f'{well_name} - Energy Injection Profile (No Data)', fontsize=16, fontweight='bold')
         
         ax.set_xlabel(time_label, fontsize=14)
         ax.legend(fontsize=11)
@@ -813,11 +813,11 @@ class ScientificVisualization:
                 ax1.set_ylabel('Water Production (bbl/day)', fontsize=14, color='blue')
                 ax1.tick_params(axis='y', labelcolor='blue')
                 
-                # Gas production on right axis
+                # Energy production on right axis
                 ax2 = ax1.twinx()
                 line2 = ax2.plot(time_values, gas_values, 'r-', marker='o', markersize=4,
-                                label='Gas Production', linewidth=2)
-                ax2.set_ylabel('Gas Production (ft³/day)', fontsize=14, color='red')
+                                label='Energy Production', linewidth=2)
+                ax2.set_ylabel('Energy Production (BTU/Day)', fontsize=14, color='red')
                 ax2.tick_params(axis='y', labelcolor='red')
                 
                 # Combine legends
@@ -874,7 +874,7 @@ class ScientificVisualization:
             if water_values:
                 print(f"Water Production: Min={min(water_values):.1f}, Max={max(water_values):.1f}, Mean={np.mean(water_values):.1f} bbl/day")
             if gas_values:
-                print(f"Gas Production: Min={min(gas_values):.1f}, Max={max(gas_values):.1f}, Mean={np.mean(gas_values):.1f} ft³/day")
+                print(f"Energy Production: Min={min(gas_values):.1f}, Max={max(gas_values):.1f}, Mean={np.mean(gas_values):.1f} BTU/Day")
         
         else:  # Injector
             gas_key = f"{well_name}_Gas_ft3day"
@@ -884,7 +884,7 @@ class ScientificVisualization:
             bhp_values = [obs.get(bhp_key, 0) for obs in physical_observations]
             
             if gas_values:
-                print(f"Gas Injection: Min={min(gas_values):.1f}, Max={max(gas_values):.1f}, Mean={np.mean(gas_values):.1f} ft³/day")
+                print(f"Energy Injection: Min={min(gas_values):.1f}, Max={max(gas_values):.1f}, Mean={np.mean(gas_values):.1f} BTU/Day")
             if bhp_values:
                 print(f"BHP Observation: Min={min(bhp_values):.1f}, Max={max(bhp_values):.1f}, Mean={np.mean(bhp_values):.1f} psi")
         
@@ -1708,7 +1708,7 @@ class ScientificVisualization:
         """Plot individual injector gas injection time series up to current step"""
         try:
             if step_idx == 0 or len(actions) < 1:
-                ax.text(0.5, 0.5, f'{well_name}\nGas Injection\n(Starting...)', 
+                ax.text(0.5, 0.5, f'{well_name}\nEnergy Injection\n(Starting...)', 
                        transform=ax.transAxes, ha='center', va='center', fontsize=10)
                 return
             
@@ -1730,9 +1730,9 @@ class ScientificVisualization:
                        markerfacecolor='green', markeredgecolor='darkgreen', markeredgewidth=2)
             
             # Customize
-            ax.set_title(f'{well_name} Gas Injection', fontsize=11, fontweight='bold')
+            ax.set_title(f'{well_name} Energy Injection', fontsize=11, fontweight='bold')
             ax.set_xlabel('Step', fontsize=10)
-            ax.set_ylabel('MMft³/day', fontsize=10, color='green')
+            ax.set_ylabel('MMBTU/Day', fontsize=10, color='green')
             ax.tick_params(axis='y', labelcolor='green', labelsize=9)
             ax.tick_params(axis='x', labelsize=9)
             ax.grid(True, alpha=0.3)
@@ -1833,13 +1833,13 @@ class ScientificVisualization:
             # Customize left axis (water)
             ax.set_title(f'{well_name} Production', fontsize=11, fontweight='bold')
             ax.set_xlabel('Step', fontsize=10)
-            ax.set_ylabel('Water (MMft³/day)', fontsize=10, color='blue')
+            ax.set_ylabel('Water (MMbbl/day)', fontsize=10, color='blue')
             ax.tick_params(axis='y', labelcolor='blue', labelsize=9)
             ax.tick_params(axis='x', labelsize=9)
             ax.grid(True, alpha=0.3)
             
             # Customize right axis (gas)
-            ax2.set_ylabel('Gas (MMft³/day)', fontsize=10, color='orange')
+            ax2.set_ylabel('Energy (MMBTU/Day)', fontsize=10, color='orange')
             ax2.tick_params(axis='y', labelcolor='orange', labelsize=9)
             
             # Create combined legend
@@ -2353,9 +2353,9 @@ class ScientificVisualization:
             
             # Plot complete time series
             ax.plot(steps, gas_values, 'g-o', linewidth=2, markersize=3, alpha=0.8, color='green')
-            ax.set_title(f'{well_name} Gas Injection\nEpisode {episode_num}', fontsize=11, fontweight='bold')
+            ax.set_title(f'{well_name} Energy Injection\nEpisode {episode_num}', fontsize=11, fontweight='bold')
             ax.set_xlabel('Time Step', fontsize=10)
-            ax.set_ylabel('MMft³/day', fontsize=10, color='green')
+            ax.set_ylabel('MMBTU/Day', fontsize=10, color='green')
             ax.tick_params(axis='y', labelcolor='green', labelsize=9)
             ax.tick_params(axis='x', labelsize=9)
             ax.grid(True, alpha=0.3)
@@ -2422,12 +2422,12 @@ class ScientificVisualization:
             # Customize axes
             ax.set_title(f'{well_name} Production\nEpisode {episode_num}', fontsize=11, fontweight='bold')
             ax.set_xlabel('Time Step', fontsize=10)
-            ax.set_ylabel('Water (MMft³/day)', fontsize=10, color='blue')
+            ax.set_ylabel('Water (MMbbl/day)', fontsize=10, color='blue')
             ax.tick_params(axis='y', labelcolor='blue', labelsize=9)
             ax.tick_params(axis='x', labelsize=9)
             ax.grid(True, alpha=0.3)
             
-            ax2.set_ylabel('Gas (MMft³/day)', fontsize=10, color='orange')
+            ax2.set_ylabel('Energy (MMBTU/Day)', fontsize=10, color='orange')
             ax2.tick_params(axis='y', labelcolor='orange', labelsize=9)
             
             # Combined legend

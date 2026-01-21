@@ -225,7 +225,7 @@ class RLTrainingDashboard:
                 
                 print("✅ All components ready!")
                 print(f"   📊 BHP range: [{action_scaling['bhp']['min']:.1f}, {action_scaling['bhp']['max']:.1f}] psi")
-                print(f"   💨 Gas range: [{action_scaling['gas_injection']['min']:.0f}, {action_scaling['gas_injection']['max']:.0f}] ft³/day")
+                print(f"   💨 Energy range: [{action_scaling['gas_injection']['min']:.0f}, {action_scaling['gas_injection']['max']:.0f}] BTU/Day")
                 
                 return True
                 

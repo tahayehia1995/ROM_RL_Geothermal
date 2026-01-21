@@ -128,7 +128,7 @@ class DeterministicPolicy(nn.Module):
         else:
             print(f"   ⚠️ No BHP ranges in dashboard config")
         
-        # Extract Gas Injection ranges from dashboard - STORE FOR REFERENCE
+        # Extract Energy Injection ranges from dashboard - STORE FOR REFERENCE
         gas_ranges = action_ranges.get('gas_injection', {})
         if gas_ranges:
             # Get min/max across all injector wells from dashboard
@@ -143,7 +143,7 @@ class DeterministicPolicy(nn.Module):
                 self.injector_gas_min = torch.tensor(dashboard_gas_min, device=self.device)
                 self.injector_gas_max = torch.tensor(dashboard_gas_max, device=self.device)
                 
-                print(f"   ✅ Gas Injection from DASHBOARD: [{dashboard_gas_min:.0f}, {dashboard_gas_max:.0f}] ft³/day")
+                print(f"   ✅ Energy Injection from DASHBOARD: [{dashboard_gas_min:.0f}, {dashboard_gas_max:.0f}] BTU/Day")
                 print(f"      📊 Dashboard wells: {list(gas_ranges.keys())}")
                 print(f"      🔧 Environment will map [0,1] → this range")
             else:

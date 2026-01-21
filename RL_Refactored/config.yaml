@@ -13,7 +13,7 @@
 # This section is minimal for Config validation only
 model:
   latent_dim: 128       # Size of latent space representation
-  u_dim: 6             # Control input dimensions (3 producer BHP + 3 gas injection)
+  u_dim: 6             # Control input dimensions (3 producer BHP + 3 energy injection)
   n_channels: 2        # Number of input channels (pressure, saturation)
   method: E2C          # Model method (for compatibility with ROM)
   sigma: 0.0           # Noise parameter (for compatibility with ROM)
@@ -45,7 +45,7 @@ training:
   batch_size: 16       # Not used in RL, but required for Config validation
   learning_rate: 0.0001  # Not used in RL, but required for Config validation
   nsteps: 2            # Not used in RL, but required for Config validation
-  num_tsteps: 30       # Number of time steps (matches RL episode length)
+  num_tsteps: 29       # Number of time steps (matches RL episode length)
 
 # ============================================================================
 # ENCODER/DECODER/TRANSITION (for compatibility with ROM Config validation)
@@ -223,7 +223,7 @@ rl_model:
   training:
     # Episode and step limits
     max_episodes: 100                   # Maximum number of training episodes
-    max_steps_per_episode: 30           # Maximum steps per episode
+    max_steps_per_episode: 29           # Maximum steps per episode
     updates_per_step: 1                 # Gradient updates per environment step
     exploration_steps: 0                # Random exploration phase
     
@@ -250,7 +250,7 @@ rl_model:
     injector_bhp_min_psi: 1000.0        # Default min for display
     injector_bhp_max_psi: 5000.0        # Default max for display
     water_production_max_ft3_day: 500000.0  # Default max for display
-    gas_production_max_ft3_day: 200000000.0 # Default max for display
+    energy_production_max_btu_day: 200000000.0 # Default max for display
     ft3_to_barrel: 5.61458             # Unit conversion factor
 
   # ===== ENHANCED LOGGING CONFIGURATION =====
@@ -258,7 +258,7 @@ rl_model:
     step_print_frequency: 30            # Print every N steps during episodes
     episode_print_frequency: 10         # Print every N episodes
     verbose_actions: false              # Store detailed action history for analysis
-    show_physical_units: false          # Display BHP/Gas in real units (psi, ft³/day)
+    show_physical_units: false          # Display BHP/Energy in real units (psi, BTU/Day)
     show_economic_breakdown: false      # Show economic analysis in episode summary
     show_convergence_detection: false   # Detect and report action convergence
     checkpoint_save_frequency: 50       # Save checkpoint every N episodes
@@ -275,7 +275,7 @@ rl_model:
       std: 0.10                         # Standard deviation for state noise
       
     # Episode termination
-    max_episode_steps: 30               # Maximum steps before episode termination
+    max_episode_steps: 29               # Maximum steps before episode termination
     
   # ===== ACTION VARIATION ENHANCEMENT =====
   action_variation:

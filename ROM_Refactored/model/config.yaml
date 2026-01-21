@@ -71,11 +71,11 @@ decoder:
 # ============================================================================
 transition:
   type: 'linear'                   # Transition model type: 'linear', 'fno', 'hybrid_fno'
-  encoder_hidden_dims: [200, 200] # Hidden dimensions for linear transition encoder
+  encoder_hidden_dims: [300, 300,300] # Hidden dimensions for linear transition encoder
   
   # FNO (Fourier Neural Operator) configuration
   fno:
-    width: 64                      # Channel width for FNO layers
+    width: 32                      # Channel width for FNO layers
     modes_x: 8                     # Fourier modes in X direction
     modes_y: 8                     # Fourier modes in Y direction
     modes_z: 4                     # Fourier modes in Z direction
@@ -111,7 +111,7 @@ training:
   batch_size: 16                   # Batch size for training | Higher=more stable gradients, more memory | Range: 8-32 for FNO
   learning_rate: 0.0001            # Adam optimizer learning rate | Lower=more stable, higher=faster | Range: 1e-5 to 1e-3
   nsteps: 2                        # Number of prediction steps during training | Higher=longer sequences | Range: 1-5
-  num_tsteps: 30                  # Number of time steps for evaluation/testing | Number of prediction steps for evaluation
+  num_tsteps: 29                  # Number of time steps for evaluation/testing | Number of prediction steps for evaluation
 
 # ============================================================================
 # LEARNING RATE SCHEDULING CONFIGURATION

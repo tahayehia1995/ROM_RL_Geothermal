@@ -216,8 +216,8 @@ class EnhancedTrainingOrchestrator:
         self.best_episode_data = {
             'episode_number': -1,
             'total_reward': -np.inf,
-            'actions': [],           # Physical units (psi, ft³/day)
-            'observations': [],      # Physical units (ft³/day, bbl/day)
+            'actions': [],           # Physical units (psi, BTU/Day)
+            'observations': [],      # Physical units (BTU/Day, bbl/day)
             'rewards': [],           # Step-wise rewards
             'states': [],            # Latent states
             'timesteps': [],         # Time information
@@ -435,18 +435,18 @@ class EnhancedTrainingOrchestrator:
                 physical_value = obs_np[i]  # Already in psi
                 well_observations[f"{well_name}_BHP_psi"] = physical_value
             
-            # Gas Production (indices 3-5) - already in ft³/day
+            # Energy Production (indices 3-5) - already in BTU/Day
             for i in range(min(3, max(0, len(obs_np) - 3))):
                 well_name = f"P{i+1}"
                 if 3 + i < len(obs_np):
-                    physical_value = obs_np[3 + i]  # Already in ft³/day
+                    physical_value = obs_np[3 + i]  # Already in BTU/Day
                     well_observations[f"{well_name}_Gas_ft3day"] = physical_value
             
-            # Water Production (indices 6-8) - already in ft³/day
+            # Water Production (indices 6-8) - already in bbl/day
             for i in range(min(3, max(0, len(obs_np) - 6))):
                 well_name = f"P{i+1}"
                 if 6 + i < len(obs_np):
-                    physical_value = obs_np[6 + i]  # Already in ft³/day
+                    physical_value = obs_np[6 + i]  # Already in bbl/day
                     well_observations[f"{well_name}_Water_ft3day"] = physical_value
                     # Convert to barrels for economic calculations
                     well_observations[f"{well_name}_Water_bblday"] = physical_value / 5.614583
@@ -497,7 +497,7 @@ class EnhancedTrainingOrchestrator:
                         physical_value = normalized_value * (dashboard_bhp_max - dashboard_bhp_min) + dashboard_bhp_min
                         action_physical[f"{well_name}_BHP_psi"] = physical_value
             
-            # Gas Injection (indices 3-5) - USE DASHBOARD RANGES
+            # Energy Injection (indices 3-5) - USE DASHBOARD RANGES
             gas_ranges = action_ranges.get('gas_injection', {})
             if gas_ranges:
                 # Get dashboard gas range
@@ -553,9 +553,9 @@ class EnhancedTrainingOrchestrator:
                     physical_value = normalized_value * (bhp_max - bhp_min) + bhp_min
                     action_physical[f"{well_name}_BHP_psi"] = physical_value
             
-            # Gas Injection (indices 3-5) - using global ROM parameters
-            if 'GASRATSC' in norm_params:
-                gas_params = norm_params['GASRATSC']
+            # Energy Injection (indices 3-5) - using global ROM parameters
+            if 'ENERGYRATE' in norm_params:
+                gas_params = norm_params['ENERGYRATE']
                 gas_min = safe_float(gas_params['min'])
                 gas_max = safe_float(gas_params['max'])
                 
@@ -653,7 +653,7 @@ class EnhancedTrainingOrchestrator:
         # Gas injection economics (revenue - cost)
         for key, value in physical_actions.items():
             if 'Gas_ft3day' in key:
-                # Convert ft³/day to tons/day, then to annual amounts
+                # Convert BTU/Day to tons/day, then to annual amounts
                 gas_tons_per_day = value * econ_config['conversion']['lf3_to_intermediate'] * econ_config['conversion']['intermediate_to_ton']
                 # Convert daily rates to annual amounts (since each RL step = 1 year)
                 annual_revenue = gas_tons_per_day * econ_config['prices']['gas_injection_revenue'] * 365
@@ -668,7 +668,7 @@ class EnhancedTrainingOrchestrator:
                 annual_penalty = value * econ_config['prices']['water_production_penalty'] * 365
                 breakdown['water_production_penalty'] += annual_penalty
         
-        # Gas production penalty  
+        # Energy production penalty  
         for key, value in physical_obs.items():
             if 'Gas_ft3day' in key and 'P' in key:  # Producer gas
                 gas_tons_per_day = value * econ_config['conversion']['lf3_to_intermediate'] * econ_config['conversion']['intermediate_to_ton']
