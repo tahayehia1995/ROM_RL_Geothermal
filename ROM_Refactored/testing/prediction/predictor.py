@@ -173,24 +173,30 @@ def generate_test_visualization_standalone(loaded_data, my_rom, device, data_dir
     
     # Use training_channel_names if available (new structure), otherwise use spatial_properties_to_load keys (old structure)
     if training_channel_names:
+        print(f"  📋 Using training_channel_names from processed data: {training_channel_names}")
         for var_name in training_channel_names:
             if var_name in test_spatial_data:
                 spatial_channels.append(test_spatial_data[var_name])
                 channel_names.append(var_name)
+                print(f"     ✅ Channel {len(channel_names)-1}: {var_name}")
             else:
-                print(f"  ⚠️ Warning: Training channel '{var_name}' not found in test data")
+                print(f"     ⚠️ Warning: Training channel '{var_name}' not found in test data")
     else:
+        print(f"  ⚠️ No training_channel_names found, using fallback ordering")
         # Fallback: use all available spatial properties
         for var_name in spatial_properties_to_load.keys():
             if var_name in test_spatial_data:
                 spatial_channels.append(test_spatial_data[var_name])
                 channel_names.append(var_name)
+                print(f"     Channel {len(channel_names)-1}: {var_name}")
     
     # Stack into state tensor: (n_sample, timesteps, channels, Nx, Ny, Nz)
     if spatial_channels:
         state_test = torch.stack(spatial_channels, dim=2)
         n_sample, timesteps, n_channels, Nx, Ny, Nz = state_test.shape
         print(f"✅ Test state tensor: {state_test.shape}")
+        print(f"   📊 Channel order in tensor: {channel_names}")
+        print(f"   ⚠️ IMPORTANT: Ensure this matches the order used during training!")
     else:
         print("❌ No spatial data available")
         return None
@@ -287,17 +293,34 @@ def generate_test_visualization_standalone(loaded_data, my_rom, device, data_dir
     print("🎨 Preparing visualization data...")
     
     # Get true sequences for comparison - rearrange to match prediction format
+    # CRITICAL: Use the SAME channel order as in state_test (which matches training order)
     state_seq_true = torch.zeros((num_case, n_channels, timesteps, Nx, Ny, Nz))
+    print(f"\n🔍 Building true state sequences with channel order: {channel_names}")
+    print(f"   ⚠️ CRITICAL: This order MUST match the order used during training!")
     for i, var_name in enumerate(channel_names):
-        state_seq_true[:, i, :, :, :, :] = test_spatial_data[var_name][test_case_indices, ...]
+        if var_name in test_spatial_data:
+            state_seq_true[:, i, :, :, :, :] = test_spatial_data[var_name][test_case_indices, ...]
+            sample_data = test_spatial_data[var_name][test_case_indices, 0, :, :, :]
+            data_range = f"[{np.nanmin(sample_data):.6f}, {np.nanmax(sample_data):.6f}]"
+            print(f"   ✅ Channel {i} ({var_name:15s}): shape {test_spatial_data[var_name][test_case_indices, ...].shape}, range {data_range}")
+        else:
+            print(f"   ❌ ERROR: Channel {i} ({var_name}) not found in test_spatial_data!")
+            print(f"      Available keys: {list(test_spatial_data.keys())}")
+            raise ValueError(f"Channel {i} ({var_name}) missing from test_spatial_data!")
     
     # Align time dimensions
     state_seq_true_aligned = state_seq_true[:, :, :num_tstep, :, :, :]
     
-    print(f"📊 Final shapes:")
-    print(f"Predicted state: {state_pred.shape}")
-    print(f"True state: {state_seq_true_aligned.shape}")
-    print(f"Predicted observations: {yobs_pred.shape}")
+    print(f"\n📊 Final shapes:")
+    print(f"   Predicted state: {state_pred.shape}")
+    print(f"   True state: {state_seq_true_aligned.shape}")
+    print(f"   Predicted observations: {yobs_pred.shape}")
+    print(f"\n✅ Channel order verification:")
+    print(f"   Channel names passed to dashboard: {channel_names}")
+    print(f"   ⚠️ IMPORTANT: state_pred[:, :, channel_idx, ...] order:")
+    for idx, name in enumerate(channel_names):
+        print(f"      Channel {idx}: {name}")
+    print(f"   This order will be used for visualization and denormalization.")
     
     # Step 7: Generate training predictions if training data is available
     # Training predictions should always be generated upfront (like test predictions) when data is available

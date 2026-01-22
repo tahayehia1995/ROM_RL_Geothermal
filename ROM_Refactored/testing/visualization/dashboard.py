@@ -209,7 +209,7 @@ class InteractiveVisualizationDashboard:
         self.all_layers = list(range(self.Nz))
         self.all_years = [self.start_year + i for i in self.all_timesteps]
         
-        # Store channel names
+        # Store channel names - CRITICAL: These must match the order in state_pred tensors!
         self.channel_names = channel_names if channel_names else []
         
         # Field names and observation names - update based on channel selection
@@ -225,16 +225,32 @@ class InteractiveVisualizationDashboard:
                     self.field_names.append('Gas Saturation')
                 elif name_upper in ['PRES', 'PRESSURE']:
                     self.field_names.append('Pressure')
+                elif name_upper in ['TEMP', 'TEMPERATURE']:
+                    self.field_names.append('Temperature')
                 elif name_upper.startswith('PERM'):
                     self.field_names.append(f'Permeability {name_upper}')
-                elif name_upper in ['PORO', 'POROSITY']:
-                    self.field_names.append('Porosity')
+                elif name_upper in ['PORO', 'POROSITY', 'VPOROSTGEO']:
+                    if name_upper == 'VPOROSTGEO':
+                        self.field_names.append('Vporostgeo')
+                    else:
+                        self.field_names.append('Porosity')
                 else:
                     self.field_names.append(name_upper.replace('_', ' ').title())
+            
+            # DIAGNOSTIC: Print channel mapping for verification
+            print("\n" + "="*70)
+            print("🔍 CHANNEL MAPPING VERIFICATION")
+            print("="*70)
+            print(f"Channel order in tensors (state_pred[:, :, channel_idx, ...]):")
+            for idx, (ch_name, field_key, field_name) in enumerate(zip(channel_names, self.field_keys, self.field_names)):
+                print(f"   Channel {idx}: '{ch_name}' -> field_key='{field_key}' -> display='{field_name}'")
+            print("="*70 + "\n")
         else:
             # Default names for backward compatibility
             self.field_names = ['Water Saturation', 'Gas Saturation', 'Pressure']
             self.field_keys = ['SW', 'SG', 'PRES']
+            print("⚠️ WARNING: No channel_names provided! Using default mapping.")
+            print("   This may cause incorrect field mapping if your data uses different channels!")
         self.obs_names = ['Inj1 BHP', 'Inj2 BHP', 'Inj3 BHP', 
                          'Prod1 Energy', 'Prod2 Energy', 'Prod3 Energy',
                          'Prod1 Water', 'Prod2 Water', 'Prod3 Water']
@@ -1073,16 +1089,24 @@ class InteractiveVisualizationDashboard:
                 
                 # Save spatial predictions for each channel
                 print(f"\n📁 Saving spatial predictions...")
+                print(f"   Channel order: {self.channel_names}")
                 for channel_idx, var_name in enumerate(self.channel_names):
                     # Extract channel data: (num_case, num_tstep, Nx, Ny, Nz)
                     channel_data = self.state_pred[:, :, channel_idx, :, :, :].cpu().detach().numpy()
+                    
+                    # Get field_key for denormalization (must match the channel name)
+                    field_key = var_name.upper()  # Use uppercase to match normalization keys
+                    if channel_idx < len(self.field_keys):
+                        field_key = self.field_keys[channel_idx]  # Use field_keys if available
+                    
+                    print(f"   Channel {channel_idx}: '{var_name}' -> field_key='{field_key}'")
                     
                     # Denormalize the data
                     denormalized_data = np.zeros_like(channel_data)
                     for case_idx in range(channel_data.shape[0]):
                         for timestep_idx in range(channel_data.shape[1]):
                             field_data = channel_data[case_idx, timestep_idx, :, :, :]
-                            denormalized_field = self._denormalize_field_data(field_data, var_name)
+                            denormalized_field = self._denormalize_field_data(field_data, field_key)
                             denormalized_data[case_idx, timestep_idx, :, :, :] = denormalized_field
                     
                     # Create full array for all cases (fill non-predicted with zeros)
@@ -1226,11 +1250,33 @@ class InteractiveVisualizationDashboard:
             actual_layer = layer_idx  # Direct layer index (0 to Nz-1)
             actual_timestep = timestep_idx  # Direct timestep index (0 to num_tstep-1)
             actual_year = self.all_years[timestep_idx]  # Corresponding year
-            field_key = self.field_keys[field_idx]
+            
+            # CRITICAL: field_idx must match channel_idx in state_pred[:, :, channel_idx, ...]
+            # field_key is used for normalization parameter lookup
+            if field_idx < len(self.field_keys):
+                field_key = self.field_keys[field_idx]
+            else:
+                # Fallback: use channel name if field_keys not available
+                if field_idx < len(self.channel_names):
+                    field_key = self.channel_names[field_idx].upper()
+                else:
+                    field_key = f'FIELD_{field_idx}'
+            
+            # DIAGNOSTIC: Print channel mapping for this field (only print once per field change)
+            if field_idx < len(self.channel_names):
+                actual_channel_name = self.channel_names[field_idx]
+                if not hasattr(self, '_last_field_idx') or self._last_field_idx != field_idx:
+                    print(f"\n🔍 Field Index {field_idx}:")
+                    print(f"   Channel name in tensor: '{actual_channel_name}'")
+                    print(f"   Field key (for normalization): '{field_key}'")
+                    print(f"   Display name: '{self.field_names[field_idx]}'")
+                    print(f"   ⚠️ CRITICAL: state_pred[:, :, {field_idx}, ...] should contain '{actual_channel_name}'")
+                    print(f"   Normalization params available: {field_key in self.norm_params if hasattr(self, 'norm_params') else 'N/A'}")
+                    self._last_field_idx = field_idx
             
             # Diagnostic mode: enable for PERMI field or when issues detected
             # Enable debug for PERMI field to help diagnose layer/residual issues
-            debug_mode = (field_key == 'PERMI')
+            debug_mode = (field_key == 'PERMI') or (field_key == 'TEMP')  # Also debug TEMP since it has issues
             
             # Get layer mask (fix: use case_idx, not actual_case_idx)
             layer_mask = self._get_layer_mask(case_idx, actual_layer, debug=debug_mode)

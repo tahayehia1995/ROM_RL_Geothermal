@@ -190,7 +190,11 @@ loss:
   lambda_reconstruction_loss: 1.0  # Weight for autoencoder reconstruction loss | Higher=better spatial accuracy | Range: 0.5-2.0
   
   enable_per_element_normalization: true   # Enable per-element loss normalization | CRITICAL FOR BALANCED TRAINING
+  enable_per_channel_loss: false    # Enable per-channel loss computation | Ensures balanced learning across channels
   reconstruction_variance: 1        # Assumed variance for reconstruction noise | Range: 0.001-1.0
+  channel_weights: null             # Optional: dict or list of weights per channel. null = equal weights (1.0)
+                                    # Example dict: {PRES: 2.0, TEMP: 2.0, PERMI: 1.0, VPOROSTGEO: 0.5}
+                                    # Example list: [2.0, 1.0, 2.0, 0.5] (by channel index)
   
   lambda_flux_loss: 0.001          # Weight for fluid flow conservation loss | Higher=better physics | Range: 0.0001-0.01
   lambda_bhp_loss: 20.0            # Weight for bottom hole pressure loss at wells | Higher=better well accuracy | Range: 10-50

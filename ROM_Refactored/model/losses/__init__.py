@@ -3,6 +3,7 @@
 from .spatial_enhancements import GradientLoss, Discriminator3D
 from .individual_losses import (
     get_reconstruction_loss,
+    get_reconstruction_loss_per_channel,
     get_flux_loss,
     get_well_bhp_loss,
     get_l2_reg_loss,
@@ -15,6 +16,7 @@ __all__ = [
     'GradientLoss',
     'Discriminator3D',
     'get_reconstruction_loss',
+    'get_reconstruction_loss_per_channel',
     'get_flux_loss',
     'get_well_bhp_loss',
     'get_l2_reg_loss',

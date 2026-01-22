@@ -203,6 +203,7 @@ class ROMWithE2C(nn.Module):
             self.test_flux_loss = self.loss_object.getFluxLoss()
             self.test_well_loss = self.loss_object.getWellLoss()
             self.test_transition_loss = self.loss_object.getTransitionLoss()
+            self.test_per_channel_losses = self.loss_object.getPerChannelLosses()
             self.test_observation_loss = self.loss_object.getObservationLoss()
             self.test_non_negative_loss = self.loss_object.getNonNegativeLoss()
 
@@ -247,6 +248,7 @@ class ROMWithE2C(nn.Module):
         self.train_flux_loss = self.loss_object.getFluxLoss()
         self.train_reconstruction_loss = self.loss_object.getReconstructionLoss()
         self.train_well_loss = self.loss_object.getWellLoss()
+        self.train_per_channel_losses = self.loss_object.getPerChannelLosses()
         self.train_transition_loss = self.loss_object.getTransitionLoss()
         self.train_observation_loss = self.loss_object.getObservationLoss()
         self.train_non_negative_loss = self.loss_object.getNonNegativeLoss()
@@ -464,6 +466,24 @@ class ROMWithE2C(nn.Module):
             return self.test_well_loss.item()
         else:
             return float(self.test_well_loss)
+    
+    def get_train_per_channel_losses(self):
+        """Get per-channel reconstruction losses for training"""
+        if self.train_per_channel_losses is not None:
+            if isinstance(self.train_per_channel_losses, torch.Tensor):
+                return self.train_per_channel_losses.cpu().detach().numpy()
+            else:
+                return self.train_per_channel_losses
+        return None
+    
+    def get_test_per_channel_losses(self):
+        """Get per-channel reconstruction losses for testing"""
+        if self.test_per_channel_losses is not None:
+            if isinstance(self.test_per_channel_losses, torch.Tensor):
+                return self.test_per_channel_losses.cpu().detach().numpy()
+            else:
+                return self.test_per_channel_losses
+        return None
     
     def get_train_transition_loss(self):
         # Handle case where train_transition_loss might be an integer (0) instead of tensor

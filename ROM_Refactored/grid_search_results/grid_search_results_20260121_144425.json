@@ -1,0 +1,68 @@
+{
+  "total_runs": 1,
+  "completed_runs": 1,
+  "successful_runs": 0,
+  "failed_runs": 1,
+  "results": [
+    {
+      "run_id": "run0001_bs128_ld60_ns2_ch4_schfix_rb3_ehd300-300-300_lin_dlwFalse_advFalse",
+      "run_name": "bs128_ld60_ns2_ch4_schfix_rb3_Linear_ehd300-300-300",
+      "status": "failed",
+      "error": "expected Tensor as element 0 in argument 0, but got list",
+      "batch_size": 128,
+      "n_steps": 2,
+      "n_channels": 4,
+      "latent_dim": 60,
+      "lr_scheduler_type": "fixed",
+      "residual_blocks": 3,
+      "encoder_hidden_dims": [
+        300,
+        300,
+        300
+      ],
+      "transition_type": "linear",
+      "dynamic_loss_weighting_enable": false,
+      "dynamic_loss_weighting_method": "gradnorm",
+      "adversarial_enable": false,
+      "channel_names": [
+        "PRES",
+        "PERMI",
+        "TEMP",
+        "VPOROSTGEO"
+      ],
+      "learning_rate": "N/A",
+      "lr_scheduler": "N/A"
+    }
+  ],
+  "failed": [
+    {
+      "run_id": "run0001_bs128_ld60_ns2_ch4_schfix_rb3_ehd300-300-300_lin_dlwFalse_advFalse",
+      "run_name": "bs128_ld60_ns2_ch4_schfix_rb3_Linear_ehd300-300-300",
+      "status": "failed",
+      "error": "expected Tensor as element 0 in argument 0, but got list",
+      "batch_size": 128,
+      "n_steps": 2,
+      "n_channels": 4,
+      "latent_dim": 60,
+      "lr_scheduler_type": "fixed",
+      "residual_blocks": 3,
+      "encoder_hidden_dims": [
+        300,
+        300,
+        300
+      ],
+      "transition_type": "linear",
+      "dynamic_loss_weighting_enable": false,
+      "dynamic_loss_weighting_method": "gradnorm",
+      "adversarial_enable": false,
+      "channel_names": [
+        "PRES",
+        "PERMI",
+        "TEMP",
+        "VPOROSTGEO"
+      ],
+      "learning_rate": "N/A",
+      "lr_scheduler": "N/A"
+    }
+  ]
+}

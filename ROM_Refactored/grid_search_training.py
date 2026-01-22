@@ -41,7 +41,7 @@ HYPERPARAMETER_GRID = {
     'batch_size': [128],
     'n_steps': [2],  # Available processed data files
     'n_channels': [4],  # Number of channels (2 for SW/SG, 4 for SW/SG/PRES/PERMI, etc.)
-    'latent_dim': [20],
+    'latent_dim': [70],
     # Learning rate scheduler
     'lr_scheduler_type': ['fixed'],#, 'fixed', 'reduce_on_plateau', 'exponential_decay', 'step_decay', 'cosine_annealing'],
     
@@ -137,10 +137,11 @@ FNO_PARAMS = {
 
 # Channel names mapping based on n_channels
 # Maps number of channels to list of channel names in order
+# WARNING: This is a FALLBACK only. The actual order is loaded from processed data files.
+# If this doesn't match your data, update it or ensure processed data has training_channel_names.
 CHANNEL_NAMES_MAP = {
-    2: ['TEMP', 'PRES'],
-    4: ['TEMP', 'PRES','VPOROSTGEO', 'PERMI']
-    # Add more mappings as needed
+    2: ['PRES', 'TEMP'],
+    4: ['PRES', 'PERMI', 'TEMP', 'VPOROSTGEO']  # Updated to match actual data order: PRES(0), PERMI(1), TEMP(2), VPOROSTGEO(3)
 }
 
 # Output directories
@@ -248,20 +249,81 @@ def validate_processed_data_file(filepath: str) -> Tuple[bool, Optional[str]]:
         return False, f"Unexpected error: {str(e)}"
 
 
-def get_channel_names(n_channels: int) -> List[str]:
+def get_channel_names(n_channels: int, loaded_data: Optional[Dict[str, Any]] = None, 
+                       norm_params_file: Optional[str] = None) -> List[str]:
     """
     Get channel names for a given number of channels.
+    Dynamically loads from processed data files if available, otherwise falls back to hardcoded mapping.
     
     Args:
         n_channels: Number of channels
+        loaded_data: Optional loaded data dictionary from load_processed_data()
+        norm_params_file: Optional path to normalization parameters JSON file
         
     Returns:
-        List of channel names
+        List of channel names in order
     """
+    import json
+    import glob
+    from pathlib import Path
+    
+    # Try to load from normalization parameters JSON file
+    norm_config = None
+    
+    # First try: use provided loaded_data
+    if loaded_data is not None and 'norm_params' in loaded_data and loaded_data['norm_params'] is not None:
+        # Check if norm_params contains selection_summary
+        if isinstance(loaded_data['norm_params'], dict):
+            if 'selection_summary' in loaded_data['norm_params']:
+                training_channels = loaded_data['norm_params']['selection_summary'].get('training_channels', [])
+                if len(training_channels) == n_channels:
+                    print(f"✅ Loaded channel order from processed data: {training_channels}")
+                    return training_channels
+    
+    # Second try: load from normalization parameters JSON file
+    if norm_params_file is None:
+        # Find the most recent normalization parameters JSON file
+        json_files = glob.glob('./processed_data/normalization_parameters_*.json')
+        if not json_files:
+            json_files = glob.glob('normalization_parameters_*.json')
+        if json_files:
+            norm_params_file = max(json_files, key=lambda x: Path(x).stat().st_mtime)
+    
+    if norm_params_file and os.path.exists(norm_params_file):
+        try:
+            with open(norm_params_file, 'r') as f:
+                norm_config = json.load(f)
+            
+            # Extract training_channels from selection_summary
+            if 'selection_summary' in norm_config:
+                training_channels = norm_config['selection_summary'].get('training_channels', [])
+                if len(training_channels) == n_channels:
+                    print(f"✅ Loaded channel order from JSON file: {training_channels}")
+                    return training_channels
+            
+            # Alternative: extract from channel_mapping sorted by training_index
+            if 'channel_mapping' in norm_config:
+                channel_mapping = norm_config['channel_mapping']
+                # Sort channels by training_index
+                sorted_channels = sorted(
+                    [(name, info.get('training_index', -1)) for name, info in channel_mapping.items()],
+                    key=lambda x: x[1]
+                )
+                training_channels = [name for name, idx in sorted_channels if idx >= 0]
+                if len(training_channels) == n_channels:
+                    print(f"✅ Loaded channel order from channel_mapping: {training_channels}")
+                    return training_channels
+        except Exception as e:
+            print(f"⚠️ Warning: Could not load channel order from {norm_params_file}: {e}")
+    
+    # Fallback: use hardcoded mapping
     if n_channels in CHANNEL_NAMES_MAP:
+        print(f"⚠️ Using hardcoded channel mapping: {CHANNEL_NAMES_MAP[n_channels]}")
+        print(f"   ⚠️ WARNING: This may not match your actual data! Check processed data file.")
         return CHANNEL_NAMES_MAP[n_channels]
     else:
-        # Fallback: generate generic names
+        # Final fallback: generate generic names
+        print(f"⚠️ Using generic channel names")
         return [f'Channel_{i}' for i in range(n_channels)]
 
 
@@ -1106,9 +1168,15 @@ def run_single_training(config_path: str, hyperparams: Dict[str, Any], run_index
                 'status': 'failed',
                 'error': error_msg,
                 **hyperparams,
+                'channel_names': get_channel_names(n_channels, loaded_data=None),
                 'learning_rate': 'N/A',
                 'lr_scheduler': 'N/A'
             }
+        
+        # Get actual channel names from processed data (CRITICAL for correct visualization)
+        channel_names = get_channel_names(n_channels, loaded_data=loaded_data)
+        print(f"📊 Using channel order: {channel_names}")
+        print(f"   ⚠️ IMPORTANT: This order must match the channel order in state_pred tensors!")
         
         # Create config with hyperparameters
         config = update_config_with_hyperparams(config_path, hyperparams)
@@ -1139,7 +1207,7 @@ def run_single_training(config_path: str, hyperparams: Dict[str, Any], run_index
             'run_name': run_name,
             'status': 'success',
             **hyperparams,  # Includes all hyperparameters including nested ones
-            'channel_names': get_channel_names(n_channels),
+            'channel_names': channel_names,  # Use channel names loaded from processed data
             'learning_rate': config.training['learning_rate'],  # From config default (FIXED)
             'lr_scheduler': config.learning_rate_scheduler.get('type', 'constant'),
             'data_file': os.path.basename(data_filepath),
@@ -1168,7 +1236,7 @@ def run_single_training(config_path: str, hyperparams: Dict[str, Any], run_index
             'status': 'failed',
             'error': str(e),
             **hyperparams,
-            'channel_names': get_channel_names(hyperparams.get('n_channels', 2)),
+            'channel_names': get_channel_names(hyperparams.get('n_channels', 2), loaded_data=None),
             'learning_rate': 'N/A',
             'lr_scheduler': 'N/A'
         }
@@ -1799,6 +1867,8 @@ if __name__ == "__main__":
     
     # Run main grid search
     main()
+
+
 
 
 # %%

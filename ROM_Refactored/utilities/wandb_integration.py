@@ -106,6 +106,12 @@ class WandBLogger:
             if well_loss and well_loss > 0:
                 metrics['train/well_loss'] = well_loss
             
+            # Add per-channel losses if available
+            per_channel_losses = my_rom.get_train_per_channel_losses()
+            if per_channel_losses is not None:
+                for ch_idx, ch_loss in enumerate(per_channel_losses):
+                    metrics[f'train/reconstruction_loss_ch{ch_idx}'] = float(ch_loss)
+            
             # Add dynamic loss weights if available
             try:
                 dynamic_weights = my_rom.loss_object.getDynamicWeights()
@@ -194,6 +200,12 @@ class WandBLogger:
                 metrics['eval/flux_loss'] = flux_loss
             if well_loss and well_loss > 0:
                 metrics['eval/well_loss'] = well_loss
+            
+            # Add per-channel losses if available
+            per_channel_losses = my_rom.get_test_per_channel_losses()
+            if per_channel_losses is not None:
+                for ch_idx, ch_loss in enumerate(per_channel_losses):
+                    metrics[f'eval/reconstruction_loss_ch{ch_idx}'] = float(ch_loss)
             
             # Add current dynamic weights (evaluation uses same weights as training)
             try:

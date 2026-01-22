@@ -2348,6 +2348,15 @@ def load_processed_data(filepath=None, data_dir='./processed_data/', n_channels=
                 selections_group = hf['data_selections']
                 if 'selections_json' in selections_group.attrs:
                     data_selections = json.loads(selections_group.attrs['selections_json'])
+                    
+                    # Extract training_channel_names and add to norm_params for easy access
+                    if 'training_channel_names' in data_selections:
+                        training_channel_names = data_selections['training_channel_names']
+                        if norm_params and 'selection_summary' not in norm_params:
+                            norm_params['selection_summary'] = {}
+                        if norm_params:
+                            norm_params['selection_summary']['training_channels'] = training_channel_names
+                            print(f"✅ Loaded training_channel_names: {training_channel_names}")
         
         # Prepare return dictionary
         loaded_data = {

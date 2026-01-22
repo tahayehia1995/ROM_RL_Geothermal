@@ -8,6 +8,7 @@ import torch.nn as nn
 
 from .individual_losses import (
     get_reconstruction_loss,
+    get_reconstruction_loss_per_channel,
     get_flux_loss,
     get_well_bhp_loss,
     get_l2_reg_loss,
@@ -94,6 +95,10 @@ class CustomizedLoss(nn.Module):
         # Per-element loss normalization configuration
         self.enable_per_element_normalization = config['loss'].get('enable_per_element_normalization', False)
         
+        # Per-channel loss configuration (ensures balanced learning across channels)
+        self.enable_per_channel_loss = config['loss'].get('enable_per_channel_loss', False)
+        self.channel_weights = config['loss'].get('channel_weights', None)  # Optional: dict or list of weights per channel
+        
         # Calculate normalization factors based on system dimensions
         if self.enable_per_element_normalization:
             # Spatial normalization: channels × grid cells
@@ -143,6 +148,17 @@ class CustomizedLoss(nn.Module):
             else:
                 print(f"     ↳ Using original scaling (reconstruction dominates due to {self.spatial_normalization_factor:,} spatial elements)")
                 print(f"     ↳ Current λ compensation: trans={self.trans_loss_weight}, obs={self.yobs_loss_weight}")
+            
+            # Per-channel loss information
+            print(f"   - Per-Channel Loss: {'ENABLED' if self.enable_per_channel_loss else 'DISABLED'}")
+            if self.enable_per_channel_loss:
+                print(f"     ↳ Ensures balanced learning across all channels")
+                if self.channel_weights:
+                    print(f"     ↳ Channel weights: {self.channel_weights}")
+                else:
+                    print(f"     ↳ Using equal weights for all channels")
+            else:
+                print(f"     ↳ Using aggregated loss (channels may have imbalanced learning)")
             
             if self.enable_flux_loss and self.channel_mapping:
                 print(f"   - Channel Mapping: {self.channel_mapping}")
@@ -205,19 +221,37 @@ class CustomizedLoss(nn.Module):
         X_next_pred, X_next, Z_next_pred, Z_next, Yobs_pred, Yobs, z0, x0, x0_rec = pred
 
         # ===== ORIGINAL LOSS COMPONENTS =====
-        loss_rec_t = get_reconstruction_loss(x0, x0_rec, self.reconstruction_variance)
+        # Compute reconstruction loss (per-channel or aggregated)
+        if self.enable_per_channel_loss:
+            loss_rec_t, per_ch_loss_t = get_reconstruction_loss_per_channel(
+                x0, x0_rec, self.reconstruction_variance, self.channel_weights
+            )
+            # Store per-channel losses for diagnostics
+            self.per_channel_loss_t = per_ch_loss_t
+        else:
+            loss_rec_t = get_reconstruction_loss(x0, x0_rec, self.reconstruction_variance)
+            self.per_channel_loss_t = None
+        
         loss_flux_t = 0
         loss_prod_bhp_t = 0
         loss_rec_t1 = 0
         loss_flux_t1 = 0
         loss_prod_bhp_t1 = 0
+        per_ch_loss_t1_list = []
         
         # Add flux loss for initial reconstruction if enabled
         if self.enable_flux_loss and self.channel_mapping:
             loss_flux_t += get_flux_loss(x0, x0_rec, self.channel_mapping)
         
         for x_next, x_next_pred in zip(X_next, X_next_pred):
-            loss_rec_t1 += get_reconstruction_loss(x_next, x_next_pred, self.reconstruction_variance)
+            if self.enable_per_channel_loss:
+                loss_rec_t1_step, per_ch_loss_t1_step = get_reconstruction_loss_per_channel(
+                    x_next, x_next_pred, self.reconstruction_variance, self.channel_weights
+                )
+                loss_rec_t1 += loss_rec_t1_step
+                per_ch_loss_t1_list.append(per_ch_loss_t1_step)
+            else:
+                loss_rec_t1 += get_reconstruction_loss(x_next, x_next_pred, self.reconstruction_variance)
             
             # Add BHP loss if enabled
             if self.enable_bhp_loss:
@@ -233,6 +267,13 @@ class CustomizedLoss(nn.Module):
                     loss_flux_t1 += get_flux_loss(x_next, x_next_pred, self.channel_mapping)
                 else:
                     print("⚠️  Warning: Flux loss enabled but no channel_mapping provided in config!")
+        
+        # Average per-channel losses across time steps for diagnostics (after loop)
+        if self.enable_per_channel_loss and per_ch_loss_t1_list:
+            # Average per-channel losses across all time steps
+            self.per_channel_loss_t1 = torch.mean(torch.stack(per_ch_loss_t1_list), dim=0)
+        else:
+            self.per_channel_loss_t1 = None
 
         loss_l2_reg = get_l2_reg_loss(z0)
         
@@ -306,6 +347,21 @@ class CustomizedLoss(nn.Module):
             self.reconstruction_loss = (loss_rec_t + loss_rec_t1) / self.spatial_normalization_factor
         else:
             self.reconstruction_loss = loss_rec_t + loss_rec_t1
+        
+        # Store per-channel losses for diagnostics (if per-channel loss enabled)
+        if self.enable_per_channel_loss:
+            # Combine initial reconstruction and multi-step prediction losses per channel
+            if self.per_channel_loss_t is not None and self.per_channel_loss_t1 is not None:
+                # Average per-channel losses across initial and multi-step predictions
+                self.per_channel_losses = (self.per_channel_loss_t + self.per_channel_loss_t1) / 2.0
+            elif self.per_channel_loss_t is not None:
+                self.per_channel_losses = self.per_channel_loss_t
+            elif self.per_channel_loss_t1 is not None:
+                self.per_channel_losses = self.per_channel_loss_t1
+            else:
+                self.per_channel_losses = None
+        else:
+            self.per_channel_losses = None
             
         self.well_loss = loss_prod_bhp_t + loss_prod_bhp_t1
         self.transition_loss = loss_trans
@@ -408,7 +464,16 @@ class CustomizedLoss(nn.Module):
 
     def getReconstructionLoss(self):
         return self.reconstruction_loss
-
+    
+    def getPerChannelLosses(self):
+        """
+        Get per-channel reconstruction losses for diagnostics.
+        
+        Returns:
+            Tensor of per-channel losses [n_channels] or None if per-channel loss is disabled
+        """
+        return self.per_channel_losses
+    
     def getWellLoss(self):
         return self.well_loss
 

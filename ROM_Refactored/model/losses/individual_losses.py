@@ -25,6 +25,63 @@ def get_reconstruction_loss(x, t_decoded, reconstruction_variance=0.1):
     return torch.mean(torch.sum((x.reshape(x.size(0), -1) - t_decoded.reshape(t_decoded.size(0), -1)) ** 2 / (2*v), dim=-1))
 
 
+def get_reconstruction_loss_per_channel(x, t_decoded, reconstruction_variance=0.1, channel_weights=None):
+    """
+    Calculate reconstruction loss per channel, then average.
+    Ensures balanced learning across all channels.
+    
+    Args:
+        x: True spatial state tensor [batch, channels, X, Y, Z]
+        t_decoded: Reconstructed spatial state tensor [batch, channels, X, Y, Z]
+        reconstruction_variance: Assumed variance of reconstruction noise
+        channel_weights: Optional dict or list of weights per channel. If None, equal weights (1.0) are used.
+                        Can be dict mapping channel names to weights, or list of weights by channel index.
+    
+    Returns:
+        reconstruction_loss: Average loss across channels (weighted if channel_weights provided)
+        per_channel_losses: Tensor of per-channel losses [n_channels] for diagnostics
+    """
+    v = reconstruction_variance
+    batch_size = x.size(0)
+    n_channels = x.size(1)
+    
+    # Compute loss per channel
+    channel_losses = []
+    for ch_idx in range(n_channels):
+        x_ch = x[:, ch_idx, :, :, :].reshape(batch_size, -1)
+        t_ch = t_decoded[:, ch_idx, :, :, :].reshape(batch_size, -1)
+        ch_loss = torch.mean(torch.sum((x_ch - t_ch) ** 2 / (2*v), dim=-1))
+        channel_losses.append(ch_loss)
+    
+    # Stack losses into tensor [n_channels]
+    channel_losses_tensor = torch.stack(channel_losses)
+    
+    # Apply channel weights if provided
+    if channel_weights is not None:
+        if isinstance(channel_weights, dict):
+            # If dict, assume it maps channel names to weights
+            # For now, use equal weights (would need channel names passed in)
+            weights = torch.ones(n_channels, device=x.device)
+        elif isinstance(channel_weights, (list, tuple)):
+            # List of weights by channel index
+            if len(channel_weights) == n_channels:
+                weights = torch.tensor(channel_weights, device=x.device, dtype=torch.float32)
+            else:
+                print(f"⚠️ Warning: channel_weights length ({len(channel_weights)}) doesn't match n_channels ({n_channels}). Using equal weights.")
+                weights = torch.ones(n_channels, device=x.device)
+        else:
+            weights = torch.ones(n_channels, device=x.device)
+        
+        # Weighted average
+        weighted_losses = channel_losses_tensor * weights
+        total_loss = torch.sum(weighted_losses) / torch.sum(weights)
+    else:
+        # Equal weighting: average across channels
+        total_loss = torch.mean(channel_losses_tensor)
+    
+    return total_loss, channel_losses_tensor
+
+
 def get_l2_reg_loss(qm):
     """Calculate L2 regularization loss"""
     l2_reg = 0.5 * qm.pow(2)
