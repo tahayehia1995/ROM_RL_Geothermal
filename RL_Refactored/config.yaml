@@ -155,16 +155,22 @@ rl_model:
   economics:
     # Unit conversion factors
     conversion:
+      btu_to_kwh: 0.000293071           # BTU to kWh conversion: 1 BTU = 0.000293071 kWh
+      # Legacy conversions (kept for backward compatibility)
       lf3_to_intermediate: 0.1167       # First conversion factor (cubic feet to intermediate unit)
       intermediate_to_ton: 4.536e-4     # Second conversion factor (intermediate to tons)
       ft3_to_barrel: 5.61458            # Standard oil industry conversion: 1 barrel = 5.61458 cubic feet
       
-    # Economic values ($/unit)
+    # Economic values ($/unit) - Geothermal Project
     prices:
-      gas_injection_revenue: 40.0       # Revenue from gas injection ($/ton)
-      gas_injection_cost: 10.0          # Operating cost of gas injection ($/ton)
-      water_production_penalty: 5.0     # Penalty for water production ($/barrel)
-      gas_production_penalty: 50.0      # Cost/penalty for produced gas ($/ton)
+      energy_production_revenue: 0.11   # Revenue from energy production ($/kWh)
+      water_production_reward: 5.0      # Reward for water production ($/bbl)
+      water_injection_cost: 10.0        # Cost for water injection ($/bbl)
+      # Legacy parameters (kept for backward compatibility)
+      gas_injection_revenue: 40.0       # Revenue from gas injection ($/ton) - deprecated
+      gas_injection_cost: 10.0          # Operating cost of gas injection ($/ton) - deprecated
+      water_production_penalty: 5.0     # Penalty for water production ($/barrel) - deprecated, use water_production_reward
+      gas_production_penalty: 50.0      # Cost/penalty for produced gas ($/ton) - deprecated
       
     # Normalization
     scale_factor: 1000000.0             # Final scaling factor for reward normalization

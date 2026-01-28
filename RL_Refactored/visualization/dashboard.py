@@ -1887,34 +1887,49 @@ class ScientificVisualization:
             return None
     
     def _plot_individual_injector_timeseries(self, ax, well_name, step_idx, actions):
-        """Plot individual injector gas injection time series up to current step"""
+        """Plot individual injector injection time series (water or energy) up to current step"""
         try:
             if step_idx == 0 or len(actions) < 1:
-                ax.text(0.5, 0.5, f'{well_name}\nEnergy Injection\n(Starting...)', 
+                ax.text(0.5, 0.5, f'{well_name}\nInjection\n(Starting...)', 
                        transform=ax.transAxes, ha='center', va='center', fontsize=10)
                 return
             
-            # Extract gas injection data up to current step
+            # Extract injection data - check for water injection first (geothermal), then energy/gas
             steps = list(range(step_idx + 1))
-            gas_values = []
+            injection_values = []
             
-            gas_key = f"{well_name}_Gas_ft3day"
+            # Try water injection first (geothermal)
+            water_key = f"{well_name}_Water_bblday"
+            energy_key = f"{well_name}_Gas_ft3day"
+            energy_key_alt = f"{well_name}_Energy_BTUday"
+            
+            is_water = False
             for i in range(step_idx + 1):
-                gas_value = actions[i].get(gas_key, 0) / 1e6  # Convert to millions
-                gas_values.append(gas_value)
+                if water_key in actions[i]:
+                    injection_value = actions[i].get(water_key, 0)
+                    injection_values.append(injection_value)
+                    is_water = True
+                elif energy_key in actions[i] or energy_key_alt in actions[i]:
+                    injection_value = actions[i].get(energy_key, actions[i].get(energy_key_alt, 0)) / 1e6  # Convert to millions
+                    injection_values.append(injection_value)
+                else:
+                    injection_values.append(0)
             
             # Plot time series
-            ax.plot(steps, gas_values, 'g-o', linewidth=2, markersize=3, alpha=0.8, color='green')
+            color = 'blue' if is_water else 'green'
+            ax.plot(steps, injection_values, f'{color[0]}-o', linewidth=2, markersize=3, alpha=0.8, color=color)
             
             # Highlight current step
             if step_idx > 0:
-                ax.plot(step_idx, gas_values[step_idx], 'go', markersize=6, 
-                       markerfacecolor='green', markeredgecolor='darkgreen', markeredgewidth=2)
+                ax.plot(step_idx, injection_values[step_idx], f'{color[0]}o', markersize=6, 
+                       markerfacecolor=color, markeredgecolor='dark' + color, markeredgewidth=2)
             
             # Customize
-            ax.set_title(f'{well_name} Energy Injection', fontsize=11, fontweight='bold')
+            title = f'{well_name} Water Injection' if is_water else f'{well_name} Energy Injection'
+            ylabel = 'bbl/Day' if is_water else 'MMBTU/Day'
+            ax.set_title(title, fontsize=11, fontweight='bold')
             ax.set_xlabel('Step', fontsize=10)
-            ax.set_ylabel('MMBTU/Day', fontsize=10, color='green')
+            ax.set_ylabel(ylabel, fontsize=10, color=color)
             ax.tick_params(axis='y', labelcolor='green', labelsize=9)
             ax.tick_params(axis='x', labelsize=9)
             ax.grid(True, alpha=0.3)
@@ -2484,7 +2499,7 @@ class ScientificVisualization:
             fig.suptitle(f'Episode Progression - Episode {episode_num} | Complete Episode Data | Progress: {ep_idx+1}/{total_episodes}', 
                         fontsize=16, fontweight='bold', y=0.97)
             
-            # Row 1: Injector Gas Actions - FULL TIME SERIES
+            # Row 1: Injector Actions - FULL TIME SERIES (Water Injection for Geothermal)
             for i in range(3):
                 ax = fig.add_subplot(gs[0, i])
                 self._plot_episode_progression_injector_timeseries(ax, f'I{i+1}', episode_num, actions)
@@ -2518,27 +2533,42 @@ class ScientificVisualization:
             return None
     
     def _plot_episode_progression_injector_timeseries(self, ax, well_name, episode_num, actions):
-        """Plot complete injector gas injection time series for episode"""
+        """Plot complete injector injection time series (water or energy) for episode"""
         try:
             if not actions:
                 ax.text(0.5, 0.5, f'{well_name}\nNo Data', transform=ax.transAxes, ha='center', va='center')
                 return
             
-            # Extract full episode time series
+            # Extract full episode time series - check for water injection first (geothermal)
             steps = list(range(len(actions)))
-            gas_values = []
-            gas_key = f"{well_name}_Gas_ft3day"
+            injection_values = []
             
+            water_key = f"{well_name}_Water_bblday"
+            energy_key = f"{well_name}_Gas_ft3day"
+            energy_key_alt = f"{well_name}_Energy_BTUday"
+            
+            is_water = False
             for action in actions:
-                gas_value = action.get(gas_key, 0) / 1e6  # Convert to millions
-                gas_values.append(gas_value)
+                if water_key in action:
+                    injection_value = action.get(water_key, 0)
+                    injection_values.append(injection_value)
+                    is_water = True
+                elif energy_key in action or energy_key_alt in action:
+                    injection_value = action.get(energy_key, action.get(energy_key_alt, 0)) / 1e6  # Convert to millions
+                    injection_values.append(injection_value)
+                else:
+                    injection_values.append(0)
             
             # Plot complete time series
-            ax.plot(steps, gas_values, 'g-o', linewidth=2, markersize=3, alpha=0.8, color='green')
-            ax.set_title(f'{well_name} Energy Injection\nEpisode {episode_num}', fontsize=11, fontweight='bold')
+            color = 'blue' if is_water else 'green'
+            ax.plot(steps, injection_values, f'{color[0]}-o', linewidth=2, markersize=3, alpha=0.8, color=color)
+            
+            title = f'{well_name} Water Injection' if is_water else f'{well_name} Energy Injection'
+            ylabel = 'bbl/Day' if is_water else 'MMBTU/Day'
+            ax.set_title(f'{title}\nEpisode {episode_num}', fontsize=11, fontweight='bold')
             ax.set_xlabel('Time Step', fontsize=10)
-            ax.set_ylabel('MMBTU/Day', fontsize=10, color='green')
-            ax.tick_params(axis='y', labelcolor='green', labelsize=9)
+            ax.set_ylabel(ylabel, fontsize=10, color=color)
+            ax.tick_params(axis='y', labelcolor=color, labelsize=9)
             ax.tick_params(axis='x', labelsize=9)
             ax.grid(True, alpha=0.3)
             

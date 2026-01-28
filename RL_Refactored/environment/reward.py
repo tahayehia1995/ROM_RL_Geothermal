@@ -6,54 +6,68 @@ import torch
 
 def reward_fun(yobs, action, num_prod, num_inj, config):
     """
-    ✅ CORRECTED: Reward function using optimal ROM structure
+    Geothermal reward function using ROM config structure
     
-    Optimal observation order: [Injector_BHP(0-2), Energy_Production(3-5), Water_Production(6-8)]
-    Optimal action order: [Producer_BHP(0-2), Energy_Injection(3-5)]
+    Observation order (from ROM config): [WATRATRC(0-2), BHP(3-5), ENERGYRATE(6-8)]
+    - WATRATRC: Water Production Rate (producers) - indices [0,1,2]
+    - BHP: Bottom-Hole Pressure (injectors) - indices [3,4,5]
+    - ENERGYRATE: Energy Production Rate (producers) - indices [6,7,8]
+    
+    Action order (from ROM config): [WATRATRC(0-2), BHP(3-5)]
+    - WATRATRC: Water Injection Rate (injectors) - indices [0,1,2]
+    - BHP: Bottom-Hole Pressure (producers) - indices [3,4,5]
+    
+    Reward Formula:
+    Reward = (Energy_production_kWh * $0.11/kWh) 
+           + (Water_production_bbl * $5/bbl)
+           - (Water_injection_bbl * $10/bbl)
     
     Args:
-        yobs: Observations using optimal order [Injector_BHP(3), Energy_Production(3), Water_Production(3)]
-        action: Actions using optimal order [Producer_BHP(3), Energy_Injection(3)]
+        yobs: Observations [WATRATRC(3), BHP(3), ENERGYRATE(3)]
+        action: Actions [WATRATRC_injection(3), BHP(3)]
         num_prod: Number of production wells
         num_inj: Number of injection wells  
         config: Configuration object
         
     Returns:
-        Economic value using optimal structure and corrected parameter mapping
+        Economic reward value (scaled)
     """
     econ_config = config.rl_model['economics']
     
     # Unit conversion factors from config
-    gas_conversion_factor = econ_config['conversion']['lf3_to_intermediate'] * econ_config['conversion']['intermediate_to_ton']
-    water_conversion_factor = econ_config['conversion']['ft3_to_barrel']
+    btu_to_kwh = econ_config['conversion'].get('btu_to_kwh', 0.000293071)
     
     # Economic parameters from config
     prices = econ_config['prices']
-    gas_injection_net = prices['gas_injection_revenue'] - prices['gas_injection_cost']
+    energy_production_revenue = prices.get('energy_production_revenue', 0.11)  # $/kWh
+    water_production_reward = prices.get('water_production_reward', 5.0)  # $/bbl
+    water_injection_cost = prices.get('water_injection_cost', 10.0)  # $/bbl
     
-    # ✅ CORRECTED: Extract observations using optimal order
-    # [Injector_BHP(0-2), Energy_Production(3-5), Water_Production(6-8)]
+    # Extract observations using ROM config order: [WATRATRC(0-2), BHP(3-5), ENERGYRATE(6-8)]
     
-    # Energy production (indices 3-5 in optimal order)
-    energy_production_btu_day = torch.sum(yobs[:, num_inj:num_inj+num_prod], dim=1)
+    # Water production (WATRATRC observations, indices 0-2, producers)
+    # Already in bbl/day from ROM denormalization
+    water_production_bbl_day = torch.sum(yobs[:, 0:num_prod], dim=1)
     
-    # Water production (indices 6-8 in optimal order)  
-    water_production_ft3_day = torch.sum(yobs[:, num_inj+num_prod:num_inj+num_prod*2], dim=1)
-    water_production_bbl_day = water_production_ft3_day / water_conversion_factor
+    # Energy production (ENERGYRATE observations, indices 6-8, producers)
+    # Note: indices are num_inj+num_prod to num_inj+num_prod*2 (which is 3+3 to 3+6 = 6 to 9)
+    # But ENERGYRATE is at indices 6-8, so: num_inj+num_prod = 3+3 = 6, correct!
+    energy_production_btu_day = torch.sum(yobs[:, num_inj+num_prod:num_inj+num_prod*2], dim=1)
+    energy_production_kwh_day = energy_production_btu_day * btu_to_kwh
     
-    # ✅ CORRECTED: Extract actions using optimal order
-    # [Producer_BHP(0-2), Energy_Injection(3-5)]
+    # Extract actions using ROM config order: [WATRATRC(0-2), BHP(3-5)]
     
-    # Energy injection (indices 3-5 in optimal action order)
-    energy_injection_btu_day = torch.sum(action[:, num_prod:num_prod+num_inj], dim=1)
+    # Water injection (WATRATRC control, indices 0-2, injectors)
+    # Already in bbl/day from action denormalization
+    water_injection_bbl_day = torch.sum(action[:, 0:num_inj], dim=1)
     
-    # Calculate economic value with optimal structure:
-    # - Energy injection revenue: ($/ton) × (BTU/Day → tons/day) [POSITIVE - enhances oil recovery]
-    # - Water production penalty: ($/bbl) × (bbl/day) [NEGATIVE - unwanted byproduct]
-    # - Energy production penalty: ($/ton) × (BTU/Day → tons/day) [NEGATIVE - pressure loss]
-    PV = (gas_injection_net * gas_conversion_factor * energy_injection_btu_day - 
-          prices['water_production_penalty'] * water_production_bbl_day - 
-          prices['gas_production_penalty'] * gas_conversion_factor * energy_production_btu_day) / econ_config['scale_factor']
+    # Calculate geothermal reward:
+    # - Energy production revenue: POSITIVE ($/kWh × kWh/day)
+    # - Water production reward: POSITIVE ($/bbl × bbl/day)
+    # - Water injection cost: NEGATIVE ($/bbl × bbl/day)
+    reward = (energy_production_revenue * energy_production_kwh_day + 
+              water_production_reward * water_production_bbl_day - 
+              water_injection_cost * water_injection_bbl_day) / econ_config['scale_factor']
     
-    return PV
+    return reward
 

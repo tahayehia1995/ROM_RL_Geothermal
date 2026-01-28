@@ -229,8 +229,8 @@ class RLTrainingDashboard:
                     print(f"   📊 BHP range: [{action_scaling['bhp']['min']:.1f}, {action_scaling['bhp']['max']:.1f}] psi")
                 if 'water_injection' in action_scaling:
                     print(f"   💧 Water injection range: [{action_scaling['water_injection']['min']:.0f}, {action_scaling['water_injection']['max']:.0f}] bbl/day")
-                if 'gas_injection' in action_scaling:
-                    print(f"   💨 Energy range: [{action_scaling['gas_injection']['min']:.0f}, {action_scaling['gas_injection']['max']:.0f}] BTU/Day")
+                if 'water_injection' in action_scaling:
+                    print(f"   💧 Water injection range: [{action_scaling['water_injection']['min']:.0f}, {action_scaling['water_injection']['max']:.0f}] bbl/day")
                 
                 return True
                 

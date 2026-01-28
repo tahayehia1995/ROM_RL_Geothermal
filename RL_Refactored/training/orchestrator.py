@@ -136,7 +136,7 @@ class ActionVariationManager:
         """Apply different variation strategies to different wells"""
         
         well_noise = torch.zeros_like(action)
-        # ✅ CORRECTED: Match consistent policy tensor order [Producer_BHP(P1,P2,P3), Gas_Injection(I1,I2,I3)]
+        # Geothermal control order (from ROM config): [WATRATRC(I1,I2,I3), BHP(P1,P2,P3)]
         wells = ['P1', 'P2', 'P3', 'I1', 'I2', 'I3']  # Order: [BHP(3), Gas(3)]
         
         for i, well in enumerate(wells):
@@ -382,7 +382,7 @@ class EnhancedTrainingOrchestrator:
         num_producers = self.config.rl_model['reservoir']['num_producers']
         num_injectors = self.config.rl_model['reservoir']['num_injectors']
         
-        # ✅ CORRECTED: Generate random actions using consistent policy order [Producer_BHP(3), Gas_Injection(3)]
+        # Generate random actions using geothermal control order [WATRATRC(3), BHP(3)]
         action = torch.rand(1, num_producers + num_injectors)  # Order: [BHP(3), Gas(3)]
         return action
     
@@ -535,6 +535,9 @@ class EnhancedTrainingOrchestrator:
                             if var_name == 'BHP':
                                 well_observations[f"{well_name}_BHP_psi"] = physical_value
                             elif var_name == 'ENERGYRATE':
+                                # Store as Energy_BTUday for clarity (value is in BTU/day)
+                                well_observations[f"{well_name}_Energy_BTUday"] = physical_value
+                                # Also keep Gas_ft3day key for backward compatibility (but it's actually BTU/day)
                                 well_observations[f"{well_name}_Gas_ft3day"] = physical_value
                             elif var_name == 'WATRATRC':
                                 well_observations[f"{well_name}_Water_ft3day"] = physical_value
@@ -599,45 +602,56 @@ class EnhancedTrainingOrchestrator:
         action_physical = {}
         
         try:
-            # Optimal action order: [Producer_BHP(0-2), Gas_Injection(3-5)]
+            # Geothermal action order (from ROM config): [WATRATRC(0-2), BHP(3-5)]
+            # WATRATRC: Water Injection Rate (injectors) - indices [0,1,2]
+            # BHP: Bottom-Hole Pressure (producers) - indices [3,4,5]
             
-            # Producer BHP (indices 0-2) - USE DASHBOARD RANGES
-            bhp_ranges = action_ranges.get('bhp', {})
+            # Water Injection (WATRATRC control, indices 0-2, injectors) - USE DASHBOARD RANGES
+            water_ranges = action_ranges.get('water_injection', action_ranges.get('controls', {}).get('WATRATRC', {}))
+            if water_ranges:
+                # Get dashboard water injection range
+                if isinstance(water_ranges, dict) and all(isinstance(v, dict) and 'min' in v and 'max' in v for v in water_ranges.values()):
+                    # Well-specific ranges
+                    water_mins = [ranges['min'] for ranges in water_ranges.values()]
+                    water_maxs = [ranges['max'] for ranges in water_ranges.values()]
+                else:
+                    water_mins = []
+                    water_maxs = []
+                
+                if water_mins and water_maxs:
+                    dashboard_water_min = min(water_mins)
+                    dashboard_water_max = max(water_maxs)
+                    
+                    for i in range(min(3, len(action_np))):
+                        well_name = f"I{i+1}"
+                        normalized_value = action_np[i]  # [0,1] from policy
+                        # Map [0,1] → dashboard range
+                        physical_value = normalized_value * (dashboard_water_max - dashboard_water_min) + dashboard_water_min
+                        action_physical[f"{well_name}_Water_bblday"] = physical_value
+            
+            # Producer BHP (indices 3-5) - USE DASHBOARD RANGES
+            bhp_ranges = action_ranges.get('bhp', action_ranges.get('controls', {}).get('BHP', {}))
             if bhp_ranges:
                 # Get dashboard BHP range
-                bhp_mins = [ranges['min'] for ranges in bhp_ranges.values()]
-                bhp_maxs = [ranges['max'] for ranges in bhp_ranges.values()]
+                if isinstance(bhp_ranges, dict) and all(isinstance(v, dict) and 'min' in v and 'max' in v for v in bhp_ranges.values()):
+                    # Well-specific ranges
+                    bhp_mins = [ranges['min'] for ranges in bhp_ranges.values()]
+                    bhp_maxs = [ranges['max'] for ranges in bhp_ranges.values()]
+                else:
+                    bhp_mins = []
+                    bhp_maxs = []
                 
                 if bhp_mins and bhp_maxs:
                     dashboard_bhp_min = min(bhp_mins)
                     dashboard_bhp_max = max(bhp_maxs)
                     
-                    for i in range(min(3, len(action_np))):
-                        well_name = f"P{i+1}"
-                        normalized_value = action_np[i]  # [0,1] from policy
-                        # Map [0,1] → dashboard range
-                        physical_value = normalized_value * (dashboard_bhp_max - dashboard_bhp_min) + dashboard_bhp_min
-                        action_physical[f"{well_name}_BHP_psi"] = physical_value
-            
-            # Energy Injection (indices 3-5) - USE DASHBOARD RANGES
-            # Try 'gas_injection' first, then 'gas' as fallback
-            gas_ranges = action_ranges.get('gas_injection', action_ranges.get('gas', {}))
-            if gas_ranges:
-                # Get dashboard gas range
-                gas_mins = [ranges['min'] for ranges in gas_ranges.values()]
-                gas_maxs = [ranges['max'] for ranges in gas_ranges.values()]
-                
-                if gas_mins and gas_maxs:
-                    dashboard_gas_min = min(gas_mins)
-                    dashboard_gas_max = max(gas_maxs)
-                    
                     for i in range(min(3, max(0, len(action_np) - 3))):
-                        well_name = f"I{i+1}"
+                        well_name = f"P{i+1}"
                         if 3 + i < len(action_np):
                             normalized_value = action_np[3 + i]  # [0,1] from policy
                             # Map [0,1] → dashboard range
-                            physical_value = normalized_value * (dashboard_gas_max - dashboard_gas_min) + dashboard_gas_min
-                            action_physical[f"{well_name}_Gas_ft3day"] = physical_value
+                            physical_value = normalized_value * (dashboard_bhp_max - dashboard_bhp_min) + dashboard_bhp_min
+                            action_physical[f"{well_name}_BHP_psi"] = physical_value
             
             return action_physical
             
@@ -761,49 +775,66 @@ class EnhancedTrainingOrchestrator:
             return None
     
     def _calculate_economic_breakdown(self, physical_obs, physical_actions):
-        """Calculate detailed economic breakdown for this step"""
+        """Calculate detailed economic breakdown for geothermal project"""
         econ_config = self.config.rl_model['economics']
         
+        # Get conversion factors
+        btu_to_kwh = econ_config['conversion'].get('btu_to_kwh', 0.000293071)
+        
+        # Get prices
+        prices = econ_config['prices']
+        energy_production_revenue = prices.get('energy_production_revenue', 0.11)  # $/kWh
+        water_production_reward = prices.get('water_production_reward', 5.0)  # $/bbl
+        water_injection_cost = prices.get('water_injection_cost', 10.0)  # $/bbl
+        
         breakdown = {
-            'gas_injection_revenue': 0.0,
-            'gas_injection_cost': 0.0,
-            'water_production_penalty': 0.0,
-            'gas_production_penalty': 0.0,
+            'energy_production_revenue': 0.0,  # Positive revenue from energy production
+            'water_production_reward': 0.0,   # Positive reward from water production
+            'water_injection_cost': 0.0,      # Negative cost for water injection
             'net_step_cashflow': 0.0,
-            'operational_cashflow': 0.0  # Track operational cashflow separately
+            'operational_cashflow': 0.0
         }
         
-        # Gas injection economics (revenue - cost)
+        # Energy production revenue (BTU/day → kWh/day → $)
+        # Look for ENERGYRATE observations (stored as Gas_ft3day but actually BTU/day)
+        for key, value in physical_obs.items():
+            if ('Gas_ft3day' in key or 'Energy' in key) and ('P' in key or 'Prod' in key):  # Producer energy
+                # Value is in BTU/day, convert to kWh/day
+                energy_kwh_per_day = value * btu_to_kwh
+                # Convert daily rates to annual amounts (since each RL step = 1 year)
+                annual_revenue = energy_kwh_per_day * energy_production_revenue * 365
+                breakdown['energy_production_revenue'] += annual_revenue
+        
+        # Water production reward (bbl/day → $)
+        for key, value in physical_obs.items():
+            if 'Water_bblday' in key and ('P' in key or 'Prod' in key):  # Producer water
+                # Convert daily rates to annual amounts (since each RL step = 1 year)
+                annual_reward = value * water_production_reward * 365
+                breakdown['water_production_reward'] += annual_reward
+        
+        # Water injection cost (bbl/day → $)
+        # Look for WATRATRC control actions (water injection)
         for key, value in physical_actions.items():
-            if 'Gas_ft3day' in key:
-                # Convert BTU/Day to tons/day, then to annual amounts
-                gas_tons_per_day = value * econ_config['conversion']['lf3_to_intermediate'] * econ_config['conversion']['intermediate_to_ton']
+            if 'Water' in key and ('I' in key or 'Inj' in key):  # Injector water
+                # Value should be in bbl/day
+                if 'bblday' in key.lower():
+                    water_bbl_per_day = value
+                elif 'ft3day' in key.lower():
+                    # Convert ft3/day to bbl/day
+                    water_bbl_per_day = value / 5.614583
+                else:
+                    # Assume bbl/day if unit not specified
+                    water_bbl_per_day = value
+                
                 # Convert daily rates to annual amounts (since each RL step = 1 year)
-                annual_revenue = gas_tons_per_day * econ_config['prices']['gas_injection_revenue'] * 365
-                annual_cost = gas_tons_per_day * econ_config['prices']['gas_injection_cost'] * 365
-                breakdown['gas_injection_revenue'] += annual_revenue
-                breakdown['gas_injection_cost'] += annual_cost
-        
-        # Water production penalty
-        for key, value in physical_obs.items():
-            if 'Water_bblday' in key:
-                # Convert daily rates to annual amounts (since each RL step = 1 year)
-                annual_penalty = value * econ_config['prices']['water_production_penalty'] * 365
-                breakdown['water_production_penalty'] += annual_penalty
-        
-        # Energy production penalty  
-        for key, value in physical_obs.items():
-            if 'Gas_ft3day' in key and 'P' in key:  # Producer gas
-                gas_tons_per_day = value * econ_config['conversion']['lf3_to_intermediate'] * econ_config['conversion']['intermediate_to_ton']
-                # Convert daily rates to annual amounts (since each RL step = 1 year)
-                annual_penalty = gas_tons_per_day * econ_config['prices']['gas_production_penalty'] * 365
-                breakdown['gas_production_penalty'] += annual_penalty
+                annual_cost = water_bbl_per_day * water_injection_cost * 365
+                breakdown['water_injection_cost'] += annual_cost
         
         # Operational cashflow for this step (before any capital costs)
-        breakdown['operational_cashflow'] = (breakdown['gas_injection_revenue'] - 
-                                            breakdown['gas_injection_cost'] - 
-                                            breakdown['water_production_penalty'] - 
-                                            breakdown['gas_production_penalty'])
+        # Positive revenue/reward minus costs
+        breakdown['operational_cashflow'] = (breakdown['energy_production_revenue'] + 
+                                            breakdown['water_production_reward'] - 
+                                            breakdown['water_injection_cost'])
         
         # Net cashflow (same as operational for step-wise calculation)
         breakdown['net_step_cashflow'] = breakdown['operational_cashflow']

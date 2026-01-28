@@ -1571,15 +1571,16 @@ class RLConfigurationDashboard:
         
         # Default economic parameters (current values from code)
         self.default_economics = {
-            'gas_injection_revenue': 50.0,  # Gas injection credit per ton ($/ton)
-            'gas_injection_cost': 10.0,     # Gas injection cost per ton ($/ton)
-            'water_production_penalty': 5.0,    # from reward function
-            'gas_production_penalty': 50.0, # from reward function
-            'lf3_to_ton_conversion': 0.1167 * 4.536e-4,  # from reward function
-            'scale_factor': 1000000.0,  # Updated to 1 million for proper RL reward scaling
-            'years_before_project_start': 5,  # Years of pre-project development (updated to 5)
+            # Geothermal project parameters
+            'energy_production_revenue': 0.11,  # Revenue from energy production ($/kWh)
+            'water_production_reward': 5.0,     # Reward for water production ($/bbl)
+            'water_injection_cost': 10.0,      # Cost for water injection ($/bbl)
+            'btu_to_kwh': 0.000293071,          # BTU to kWh conversion factor
+            'scale_factor': 1000000.0,          # Final scaling factor for reward normalization
+            # Pre-project development parameters
+            'years_before_project_start': 5,    # Years of pre-project development
             'capital_cost_per_year': 100000000.0,  # Capital cost per year during pre-project phase ($100M default)
-            'fixed_capital_cost': 500000000.0  # Calculated: years_before_project_start × capital_cost_per_year
+            'fixed_capital_cost': 500000000.0   # Calculated: years_before_project_start × capital_cost_per_year
         }
         
         # Default RL model hyperparameters
@@ -3084,11 +3085,10 @@ class RLConfigurationDashboard:
         self.economic_inputs = {}
         
         params = [
-            ('gas_injection_revenue', 'Energy Injection Credit ($/ton)', self.default_economics['gas_injection_revenue']),
-            ('gas_injection_cost', 'Energy Injection Cost ($/ton)', self.default_economics['gas_injection_cost']),
-            ('water_production_penalty', 'Water Production Penalty ($/barrel)', self.default_economics['water_production_penalty']),
-            ('gas_production_penalty', 'Energy Production Penalty ($/ton)', self.default_economics['gas_production_penalty']),
-            ('lf3_to_ton_conversion', 'ft³ to ton Conversion Factor', self.default_economics['lf3_to_ton_conversion']),
+            ('energy_production_revenue', 'Energy Production Revenue ($/kWh)', self.default_economics['energy_production_revenue']),
+            ('water_production_reward', 'Water Production Reward ($/bbl)', self.default_economics['water_production_reward']),
+            ('water_injection_cost', 'Water Injection Cost ($/bbl)', self.default_economics['water_injection_cost']),
+            ('btu_to_kwh', 'BTU to kWh Conversion Factor', self.default_economics['btu_to_kwh']),
             ('scale_factor', 'Scale Factor', self.default_economics['scale_factor'])
         ]
         
@@ -3162,22 +3162,22 @@ class RLConfigurationDashboard:
         
         # Current reward function display
         economic_widgets.extend([
-            widgets.HTML("<hr><h4>Current Reward Function</h4>"),
+            widgets.HTML("<hr><h4>Geothermal Reward Function</h4>"),
             widgets.HTML("""
             <div style='background-color: #f0f8ff; padding: 10px; border-left: 4px solid #4CAF50;'>
             <pre>
-PV = (gas_revenue * conversion * injection_rates
-      - gas_cost * conversion * injection_rates
-      - water_penalty * water_production 
-      - gas_penalty * conversion * gas_production) / scale_factor
+Reward = (energy_production_revenue * energy_production_kWh
+        + water_production_reward * water_production_bbl
+        - water_injection_cost * water_injection_bbl) / scale_factor
 
 Where:
-- gas_revenue: Revenue from gas injection ($/ton)
-- gas_cost: Cost of gas injection ($/ton)
-- water_penalty: Penalty for water production ($/barrel)  
-- gas_penalty: Penalty for gas production ($/ton)
-- conversion: ft³ to ton conversion factor
-- scale_factor: Numerical scaling
+- energy_production_revenue: Revenue from energy production ($/kWh)
+- water_production_reward: Reward for water production ($/bbl)
+- water_injection_cost: Cost for water injection ($/bbl)
+- energy_production_kWh: Energy production rate (kWh/day)
+- water_production_bbl: Water production rate (bbl/day)
+- water_injection_bbl: Water injection rate (bbl/day)
+- scale_factor: Numerical scaling factor
             </pre>
             </div>
             """)
@@ -3892,8 +3892,7 @@ Where:
                 action_ranges['bhp'] = selected_controls['BHP']
             if 'WATRATRC' in selected_controls:
                 action_ranges['water_injection'] = selected_controls['WATRATRC']
-            if 'ENERGYRATE' in selected_controls:
-                action_ranges['gas_injection'] = selected_controls['ENERGYRATE']
+            # Note: ENERGYRATE is an observation, not a control in geothermal projects
             
             config['action_ranges'] = action_ranges
             
@@ -4511,14 +4510,13 @@ def get_reward_function_params(rl_config):
     """
     economic_params = rl_config.get('economic_params', {})
     
-    # Default values from the current implementation
+    # Default values for geothermal project
     defaults = {
-        'gas_injection_revenue': 50.0,  # Gas injection credit per ton ($/ton)
-        'gas_injection_cost': 10.0,     # Gas injection cost per ton ($/ton)
-        'water_production_penalty': 5.0,    # from reward function
-        'gas_production_penalty': 50.0, # from reward function
-        'lf3_to_ton_conversion': 0.1167 * 4.536e-4,
-        'scale_factor': 1000000.0  # Updated to 1 million for proper RL reward scaling
+        'energy_production_revenue': 0.11,  # Revenue from energy production ($/kWh)
+        'water_production_reward': 5.0,     # Reward for water production ($/bbl)
+        'water_injection_cost': 10.0,       # Cost for water injection ($/bbl)
+        'btu_to_kwh': 0.000293071,         # BTU to kWh conversion factor
+        'scale_factor': 1000000.0           # Final scaling factor for reward normalization
     }
     
     # Merge with user configuration
@@ -4691,36 +4689,46 @@ def create_rl_reward_function(rl_config):
     
     def reward_function(yobs, action, num_prod, num_inj):
         """
-        Configured reward function based on dashboard parameters
-        🎯 USES OPTIMAL STRUCTURE FROM DASHBOARD
+        Configured geothermal reward function based on dashboard parameters
+        Uses ROM config structure: [WATRATRC(0-2), BHP(3-5), ENERGYRATE(6-8)]
         
         Args:
-            yobs: observations [Injector_BHP(0-2), Gas_Production(3-5), Water_Production(6-8)]
-            action: actions [Producer_BHP(0-2), Gas_Injection(3-5)]  
+            yobs: observations [WATRATRC(0-2), BHP(3-5), ENERGYRATE(6-8)]
+            action: actions [WATRATRC_injection(0-2), BHP(3-5)]  
             num_prod: number of producers
             num_inj: number of injectors
             
         Returns:
             torch.Tensor: reward value
         """
+        import torch
+        
         # Extract parameters
-        gas_revenue = reward_params['gas_injection_revenue']
-        gas_cost = reward_params['gas_injection_cost']
-        water_penalty = reward_params['water_production_penalty']
-        gas_penalty = reward_params['gas_production_penalty']
-        conversion = reward_params['lf3_to_ton_conversion']
+        energy_production_revenue = reward_params['energy_production_revenue']  # $/kWh
+        water_production_reward = reward_params['water_production_reward']  # $/bbl
+        water_injection_cost = reward_params['water_injection_cost']  # $/bbl
+        btu_to_kwh = reward_params['btu_to_kwh']  # BTU to kWh conversion
         scale = reward_params['scale_factor']
         
-        # Calculate PV using configured parameters
-        # Formula: (gas_injection_revenue - gas_injection_cost) * conversion - water_penalty - gas_penalty
-        injection_revenue = gas_revenue * conversion * torch.sum(action[:, num_prod:], dim=1)
-        injection_cost = gas_cost * conversion * torch.sum(action[:, num_prod:], dim=1)
-        water_production_penalty = water_penalty * torch.sum(yobs[:, :num_prod], dim=1)
-        gas_production_penalty = gas_penalty * conversion * torch.sum(yobs[:, num_prod:num_prod*2], dim=1)
+        # Extract observations using ROM config order: [WATRATRC(0-2), BHP(3-5), ENERGYRATE(6-8)]
+        # Water production (WATRATRC observations, indices 0-2, producers) - already in bbl/day
+        water_production_bbl_day = torch.sum(yobs[:, 0:num_prod], dim=1)
         
-        PV = (injection_revenue - injection_cost - water_production_penalty - gas_production_penalty) / scale
+        # Energy production (ENERGYRATE observations, indices 6-8, producers)
+        energy_production_btu_day = torch.sum(yobs[:, num_inj+num_prod:num_inj+num_prod*2], dim=1)
+        energy_production_kwh_day = energy_production_btu_day * btu_to_kwh
         
-        return PV
+        # Extract actions using ROM config order: [WATRATRC(0-2), BHP(3-5)]
+        # Water injection (WATRATRC control, indices 0-2, injectors) - already in bbl/day
+        water_injection_bbl_day = torch.sum(action[:, 0:num_inj], dim=1)
+        
+        # Calculate geothermal reward:
+        # Reward = (Energy_production_kWh * $0.11/kWh) + (Water_production_bbl * $5/bbl) - (Water_injection_bbl * $10/bbl)
+        reward = (energy_production_revenue * energy_production_kwh_day + 
+                  water_production_reward * water_production_bbl_day - 
+                  water_injection_cost * water_injection_bbl_day) / scale
+        
+        return reward
     
     return reward_function
 
