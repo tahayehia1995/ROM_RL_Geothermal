@@ -182,6 +182,9 @@ class Timer:
             "metadata": serializable_metadata
         }
         
+        # Ensure log directory exists
+        os.makedirs(self.log_dir, exist_ok=True)
+        
         # Log file name: timing_log_YYYY-MM-DD.json
         date_str = datetime.now().strftime("%Y-%m-%d")
         log_file = os.path.join(self.log_dir, f"timing_log_{date_str}.json")

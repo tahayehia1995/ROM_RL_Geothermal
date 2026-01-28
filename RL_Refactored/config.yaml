@@ -22,6 +22,8 @@ model:
 # DATA CONFIGURATION (for compatibility with ROM Config validation)
 # ============================================================================
 # Minimal data section - actual data comes from ROM_Refactored
+# NOTE: Observation and control variable definitions are loaded from ROM_Refactored/config.yaml
+# to ensure perfect consistency between ROM training and RL training
 data:
   input_shape: [2, 34, 16, 25]  # [channels, X, Y, Z] - matches ROM training data
   num_prod: 3                    # Number of production wells
@@ -35,6 +37,17 @@ data:
       P1: [1, 11, 24]
       P2: [16, 4, 24]
       P3: [18, 11, 24]
+  # Observation variable definitions - loaded from ROM config for consistency
+  # These will be loaded from ROM_Refactored/config.yaml at runtime
+  observations:
+    # Note: Actual definitions loaded from ROM config.yaml data.observations
+    # This ensures RL uses EXACT same observation structure as ROM
+    load_from_rom_config: true
+  # Control variable definitions - loaded from ROM config for consistency  
+  controls:
+    # Note: Actual definitions loaded from ROM config.yaml data.controls
+    # This ensures RL uses EXACT same control structure as ROM
+    load_from_rom_config: true
 
 # ============================================================================
 # TRAINING CONFIGURATION (for compatibility with ROM Config validation)

@@ -43,14 +43,62 @@ class DataPreprocessingDashboard:
         self.norm_params = {}
         self.final_tensors = {}
         
-        # Load config to get n_steps
+        # Load config to get n_steps and well type mappings
         try:
             self.config = Config('config.yaml')
             self.nsteps = self.config.training.get('nsteps', 2)
+            # Load well type mappings from config
+            self._load_well_type_mappings()
         except Exception as e:
             # Fallback to default if config loading fails
             self.config = None
             self.nsteps = 2
+            self.well_type_mappings = {}  # Will use defaults
+    
+    def _load_well_type_mappings(self):
+        """Load well type mappings for observations and controls from config"""
+        self.well_type_mappings = {}
+        
+        if self.config is None:
+            return
+        
+        try:
+            data_config = self.config.get('data', {})
+            
+            # Load observation variable mappings
+            obs_config = data_config.get('observations', {})
+            if obs_config and 'variables' in obs_config:
+                obs_vars = obs_config['variables']
+                for var_name, var_config in obs_vars.items():
+                    well_type = var_config.get('well_type', '')  # 'injectors' or 'producers'
+                    num_wells = var_config.get('num_wells', 0)
+                    self.well_type_mappings[var_name] = {
+                        'well_type': well_type,
+                        'num_wells': num_wells
+                    }
+            
+            # Load control variable mappings
+            control_config = data_config.get('controls', {})
+            if control_config and 'variables' in control_config:
+                control_vars = control_config['variables']
+                for var_name, var_config in control_vars.items():
+                    well_type = var_config.get('well_type', '')  # 'injectors' or 'producers'
+                    num_wells = var_config.get('num_wells', 0)
+                    self.well_type_mappings[var_name] = {
+                        'well_type': well_type,
+                        'num_wells': num_wells
+                    }
+            
+            # Also get num_inj and num_prod for fallback
+            self.num_inj = data_config.get('num_inj', 3)
+            self.num_prod = data_config.get('num_prod', 3)
+            
+        except Exception as e:
+            print(f"⚠️ Could not load well type mappings from config: {e}")
+            # Use defaults
+            self.num_inj = 3
+            self.num_prod = 3
+            self.well_type_mappings = {}
         
         # Check if widgets are available
         if not WIDGETS_AVAILABLE:
@@ -584,15 +632,31 @@ class DataPreprocessingDashboard:
             self.control_checkboxes[var_name] = {}
             
             for well_idx in range(num_wells):
-                # Set default selections based on requested logic:
-                # - BHP: last 3 wells should be checked
-                # - ENERGYRATE: first 3 wells should be checked
-                # - WATRATRC: no wells should be checked
+                # Set default selections for controls based on config
                 default_selected = False
-                if var_name == 'BHP' and well_idx >= max(0, num_wells - 3):  # BHP last 3 wells
-                    default_selected = True
-                elif var_name == 'ENERGYRATE' and well_idx < 3:  # ENERGYRATE first 3 wells
-                    default_selected = True
+                
+                # Get well type mapping from config
+                var_mapping = self.well_type_mappings.get(var_name, {})
+                well_type = var_mapping.get('well_type', '')
+                num_var_wells = var_mapping.get('num_wells', 0)
+                
+                if well_type == 'injectors' and num_var_wells > 0:
+                    # For injector variables, select first num_var_wells wells
+                    if well_idx < num_var_wells:
+                        default_selected = True
+                elif well_type == 'producers' and num_var_wells > 0:
+                    # For producer variables, select last num_var_wells wells
+                    if well_idx >= max(0, num_wells - num_var_wells):
+                        default_selected = True
+                else:
+                    # Fallback to hard-coded defaults if config not available
+                    # - BHP: last 3 wells should be checked
+                    # - ENERGYRATE: first 3 wells should be checked
+                    # - WATRATRC: no wells should be checked
+                    if var_name == 'BHP' and well_idx >= max(0, num_wells - 3):  # BHP last 3 wells
+                        default_selected = True
+                    elif var_name == 'ENERGYRATE' and well_idx < 3:  # ENERGYRATE first 3 wells
+                        default_selected = True
                 
                 checkbox = widgets.Checkbox(
                     value=default_selected,
@@ -667,15 +731,31 @@ class DataPreprocessingDashboard:
             self.observation_checkboxes[var_name] = {}
             
             for well_idx in range(num_wells):
-                # Set default selections for observations
-                # Keeping BHP for first 3 wells (injectors), and ENERGYRATE and WATRATRC for last 3 wells (producers)
+                # Set default selections for observations based on config
                 default_selected = False
-                if var_name == 'BHP' and well_idx < 3:  # Injector BHP (first 3 wells)
-                    default_selected = True
-                elif var_name == 'WATRATRC' and well_idx >= max(0, num_wells - 3):  # Water production (last 3 wells)
-                    default_selected = True
-                elif var_name == 'ENERGYRATE' and well_idx >= max(0, num_wells - 3):  # Energy production (last 3 wells)
-                    default_selected = True
+                
+                # Get well type mapping from config
+                var_mapping = self.well_type_mappings.get(var_name, {})
+                well_type = var_mapping.get('well_type', '')
+                num_var_wells = var_mapping.get('num_wells', 0)
+                
+                if well_type == 'injectors' and num_var_wells > 0:
+                    # For injector variables, select first num_var_wells wells
+                    if well_idx < num_var_wells:
+                        default_selected = True
+                elif well_type == 'producers' and num_var_wells > 0:
+                    # For producer variables, select last num_var_wells wells
+                    if well_idx >= max(0, num_wells - num_var_wells):
+                        default_selected = True
+                else:
+                    # Fallback to hard-coded defaults if config not available
+                    # Keeping BHP for first 3 wells (injectors), and ENERGYRATE and WATRATRC for last 3 wells (producers)
+                    if var_name == 'BHP' and well_idx < 3:  # Injector BHP (first 3 wells)
+                        default_selected = True
+                    elif var_name == 'WATRATRC' and well_idx >= max(0, num_wells - 3):  # Water production (last 3 wells)
+                        default_selected = True
+                    elif var_name == 'ENERGYRATE' and well_idx >= max(0, num_wells - 3):  # Energy production (last 3 wells)
+                        default_selected = True
                 
                 checkbox = widgets.Checkbox(
                     value=default_selected,
@@ -767,20 +847,50 @@ class DataPreprocessingDashboard:
         }
         
         # 1. Store spatial channel normalization parameters
+        # CRITICAL: Save in training_channel_names order if available (preserves user selection order)
         if hasattr(self, 'all_spatial_properties'):
-            for var_name, filename in self.all_spatial_properties.items():
-                if var_name in self.norm_params:
-                    norm_config['spatial_channels'][var_name] = {
-                        'filename': filename,
-                        'normalization_type': self.normalization_preferences.get(var_name, 'minmax'),
-                        'parameters': self.norm_params[var_name],
-                        'selected_for_training': var_name in self.selected_training_channels if hasattr(self, 'selected_training_channels') else False
-                    }
+            # Determine the order to save channels
+            if hasattr(self, 'training_channel_names') and self.training_channel_names:
+                # Save in training_channel_names order first (preserves user selection order)
+                save_order = self.training_channel_names.copy()
+                # Then add any remaining channels from all_spatial_properties
+                remaining_channels = [name for name in self.all_spatial_properties.keys() if name not in self.training_channel_names]
+                save_order.extend(remaining_channels)
+                print(f"  📋 Saving spatial_channels in training_channel_names order: {save_order}")
+            else:
+                # Fallback: use all_spatial_properties order
+                save_order = list(self.all_spatial_properties.keys())
+                print(f"  ⚠️ WARNING: No training_channel_names available, using all_spatial_properties order")
+            
+            for var_name in save_order:
+                if var_name in self.all_spatial_properties and var_name in self.norm_params:
+                    filename = self.all_spatial_properties[var_name]
+                    norm_params_var = self.norm_params[var_name]
+                    
+                    # Check if per-layer normalization was used
+                    if norm_params_var.get('per_layer', False):
+                        # Per-layer normalization: save nested structure
+                        norm_config['spatial_channels'][var_name] = {
+                            'filename': filename,
+                            'normalization_type': self.normalization_preferences.get(var_name, 'minmax'),
+                            'parameters': norm_params_var,  # Already contains per_layer flag and layers dict
+                            'selected_for_training': var_name in self.selected_training_channels if hasattr(self, 'selected_training_channels') else False
+                        }
+                        print(f"    Saving per-layer normalization for {var_name} ({len(norm_params_var.get('layers', {}))} layers)")
+                    else:
+                        # Global normalization: save existing flat structure (backward compatibility)
+                        norm_config['spatial_channels'][var_name] = {
+                            'filename': filename,
+                            'normalization_type': self.normalization_preferences.get(var_name, 'minmax'),
+                            'parameters': norm_params_var,
+                            'selected_for_training': var_name in self.selected_training_channels if hasattr(self, 'selected_training_channels') else False
+                        }
                     
                     # Add training position if selected
                     if hasattr(self, 'training_channel_names') and var_name in self.training_channel_names:
                         training_position = self.training_channel_names.index(var_name)
                         norm_config['spatial_channels'][var_name]['training_position'] = training_position
+                        print(f"    Channel {training_position}: {var_name} -> {filename}")
         
         # 2. Store control variable normalization parameters 
         if hasattr(self, 'selected_controls'):
@@ -811,8 +921,15 @@ class DataPreprocessingDashboard:
             norm_config['channel_mapping'] = self.training_channel_mapping
         
         # 5. Store selection summary for easy reference
+        # CRITICAL: Use training_channel_names (preserves order) instead of selected_training_channels.keys()
+        training_channels_list = self.training_channel_names if hasattr(self, 'training_channel_names') and self.training_channel_names else []
+        if not training_channels_list and hasattr(self, 'selected_training_channels'):
+            # Fallback to dict keys if training_channel_names not available (should not happen)
+            training_channels_list = list(self.selected_training_channels.keys())
+            print("  ⚠️ WARNING: Using selected_training_channels.keys() as fallback (order may not be preserved)")
+        
         norm_config['selection_summary'] = {
-            'training_channels': list(self.selected_training_channels.keys()) if hasattr(self, 'selected_training_channels') else [],
+            'training_channels': training_channels_list,  # Preserves user selection order
             'control_wells_by_variable': {var: config['wells'] for var, config in self.selected_controls.items()} if hasattr(self, 'selected_controls') else {},
             'observation_wells_by_variable': {var: config['wells'] for var, config in self.selected_observations.items()} if hasattr(self, 'selected_observations') else {}
         }
@@ -913,8 +1030,115 @@ class DataPreprocessingDashboard:
                 
                 # Save STATE_train (list of tensors)
                 state_train_group = train_group.create_group('STATE')
+                
+                # CRITICAL VERIFICATION: Verify channel order before saving
+                if self.STATE_train and len(self.STATE_train) > 0:
+                    first_tensor = self.STATE_train[0]
+                    if hasattr(self, 'training_channel_names') and len(self.training_channel_names) == first_tensor.shape[1]:
+                        print(f"  🔍 VERIFYING tensor channel order before saving:")
+                        sample_size = min(100, first_tensor.shape[0])
+                        
+                        # Get normalization parameters for denormalization check
+                        if hasattr(self, 'norm_params'):
+                            print(f"     Denormalizing channels to verify physical ranges:")
+                            for ch_idx in range(first_tensor.shape[1]):
+                                expected_name = self.training_channel_names[ch_idx]
+                                sample_data = first_tensor[:sample_size, ch_idx, :, :, :].cpu().numpy()
+                                sample_mean = np.nanmean(sample_data)
+                                sample_min = np.nanmin(sample_data)
+                                sample_max = np.nanmax(sample_data)
+                                
+                                # Try to denormalize and check physical range
+                                if expected_name in self.norm_params:
+                                    params = self.norm_params[expected_name]
+                                    if params.get('type') == 'minmax':
+                                        min_val = float(params.get('min', 0))
+                                        max_val = float(params.get('max', 1))
+                                        denorm_min = sample_min * (max_val - min_val) + min_val
+                                        denorm_max = sample_max * (max_val - min_val) + min_val
+                                        expected_range_str = f"[{min_val:.6e}, {max_val:.6e}]"
+                                        denorm_range_str = f"[{denorm_min:.6e}, {denorm_max:.6e}]"
+                                        in_range = (denorm_min >= min_val * 0.9 and denorm_max <= max_val * 1.1)
+                                        range_status = "IN_RANGE" if in_range else "OUT_OF_RANGE"
+                                        print(f"     Channel {ch_idx} ({expected_name}): norm_mean={sample_mean:.6f}")
+                                        print(f"        Denorm: {denorm_range_str}, Expected: {expected_range_str} [{range_status}]")
+                                        
+                                        if not in_range:
+                                            print(f"        ⚠️ WARNING: Channel {ch_idx} denormalized range does not match expected range for {expected_name}!")
+                                    else:
+                                        print(f"     Channel {ch_idx} ({expected_name}): norm_mean={sample_mean:.6f} (log normalization)")
+                                else:
+                                    print(f"     Channel {ch_idx} ({expected_name}): norm_mean={sample_mean:.6f} (no norm params)")
+                        else:
+                            # Fallback to simple mean check
+                            for ch_idx in range(first_tensor.shape[1]):
+                                expected_name = self.training_channel_names[ch_idx]
+                                sample_data = first_tensor[:sample_size, ch_idx, :, :, :].cpu().numpy()
+                                sample_mean = np.mean(sample_data)
+                                print(f"     Channel {ch_idx}: mean={sample_mean:.6f}, expected={expected_name}")
+                        
+                        print(f"  ✅ Verified: Tensor has {len(self.training_channel_names)} channels before saving")
+                
+                # Save each tensor and verify it's saved correctly
                 for i, state_tensor in enumerate(self.STATE_train):
-                    state_train_group.create_dataset(f'step_{i}', data=state_tensor.cpu().numpy() if hasattr(state_tensor, 'cpu') else state_tensor)
+                    # Convert to numpy
+                    state_data = state_tensor.cpu().numpy() if hasattr(state_tensor, 'cpu') else state_tensor
+                    
+                    # VERIFICATION: After conversion to numpy, verify channel order is preserved  
+                    if i == 0 and hasattr(self, 'training_channel_names') and len(self.training_channel_names) == state_data.shape[1]:
+                        print(f"  🔍 VERIFYING numpy array channel order after conversion (step_{i}):")
+                        sample_size = min(100, state_data.shape[0])
+                        
+                        # Get normalization parameters for denormalization
+                        if hasattr(self, 'norm_params'):
+                            print(f"     Denormalizing to verify physical ranges:")
+                            for ch_idx in range(state_data.shape[1]):
+                                expected_name = self.training_channel_names[ch_idx]
+                                sample_data = state_data[:sample_size, ch_idx, :, :, :]
+                                sample_mean = np.nanmean(sample_data)
+                                sample_min = np.nanmin(sample_data)
+                                sample_max = np.nanmax(sample_data)
+                                
+                                # Denormalize
+                                if expected_name in self.norm_params:
+                                    params = self.norm_params[expected_name]
+                                    if params.get('type') == 'minmax':
+                                        min_val = float(params.get('min', 0))
+                                        max_val = float(params.get('max', 1))
+                                        denorm_min = sample_min * (max_val - min_val) + min_val
+                                        denorm_max = sample_max * (max_val - min_val) + min_val
+                                        print(f"     Channel {ch_idx} ({expected_name}): norm_mean={sample_mean:.6f}")
+                                        print(f"        Denorm: [{denorm_min:.6e}, {denorm_max:.6e}], Expected: [{min_val:.6e}, {max_val:.6e}]")
+                                    else:
+                                        print(f"     Channel {ch_idx} ({expected_name}): norm_mean={sample_mean:.6f} (log norm)")
+                        else:
+                            for ch_idx in range(state_data.shape[1]):
+                                expected_name = self.training_channel_names[ch_idx]
+                                sample_data = state_data[:sample_size, ch_idx, :, :, :]
+                                sample_mean = np.mean(sample_data)
+                                print(f"     Channel {ch_idx}: mean={sample_mean:.6f}, expected={expected_name}")
+                    
+                    # Save to H5
+                    state_train_group.create_dataset(f'step_{i}', data=state_data)
+                    
+                    # VERIFICATION: Immediately read back and verify
+                    if i == 0:
+                        saved_data = state_train_group[f'step_{i}'][:]
+                        print(f"  🔍 VERIFYING saved data by reading back from H5 (step_{i}):")
+                        if np.array_equal(state_data, saved_data):
+                            print(f"     ✅ Saved data matches original numpy array exactly")
+                        else:
+                            print(f"     ❌ WARNING: Saved data differs from original!")
+                            print(f"        Original shape: {state_data.shape}, Saved shape: {saved_data.shape}")
+                        
+                        # Verify channel order in saved data
+                        sample_size = min(100, saved_data.shape[0])
+                        print(f"     Channel means in saved H5 data:")
+                        for ch_idx in range(saved_data.shape[1]):
+                            saved_sample = saved_data[:sample_size, ch_idx, :, :, :]
+                            saved_mean = np.mean(saved_sample)
+                            expected_name = self.training_channel_names[ch_idx] if ch_idx < len(self.training_channel_names) else f"Channel{ch_idx}"
+                            print(f"        Channel {ch_idx}: mean={saved_mean:.6f}, expected={expected_name}")
                 
                 # Save BHP_train (list of tensors)
                 bhp_train_group = train_group.create_group('BHP')
@@ -1026,10 +1250,12 @@ class DataPreprocessingDashboard:
         self.all_spatial_properties = {}
         self.normalization_preferences = {}
         
-        # Load all available spatial properties
+        # Load all available spatial properties in the order they appear in available_spatial_files
+        # This order should match spatial_file_order
         for file_path in self.available_spatial_files:
             var_name = file_path.replace('batch_spatial_properties_', '').replace('.h5', '')
             self.all_spatial_properties[var_name] = file_path
+            print(f"  📋 Added to all_spatial_properties: {var_name} (order preserved)")
             
             # Get normalization preference for this property
             if hasattr(self, 'state_normalization_controls') and var_name in self.state_normalization_controls:
@@ -1109,55 +1335,146 @@ class DataPreprocessingDashboard:
         observations = [(k, len(v['wells'])) for k, v in self.selected_observations.items()]
         print(f"Configuration: {len(training_channels)} channels, {len(controls)} controls, {len(observations)} observations")
     
+    def _get_selected_channel_order(self):
+        """Get selected channels in UI order (user selection order)
+        
+        This method preserves the order channels appear in the UI checkboxes,
+        which matches the order in available_spatial_files. This ensures
+        the tensor channel order matches user expectations.
+        
+        Returns:
+            List of channel names in user selection order
+        """
+        if not hasattr(self, 'channel_selection_checkboxes'):
+            return []
+        
+        selected_order = []
+        # Iterate through UI order (available_spatial_files) to preserve selection order
+        for file_path in self.available_spatial_files:
+            var_name = file_path.replace('batch_spatial_properties_', '').replace('.h5', '')
+            if var_name in self.channel_selection_checkboxes:
+                checkbox = self.channel_selection_checkboxes[var_name]['checkbox']
+                if checkbox.value and var_name in self.selected_training_channels:
+                    selected_order.append(var_name)
+        
+        return selected_order
     def _load_and_normalize_data(self):
         """Load and normalize ALL spatial data, then extract selected channels"""
         print("Loading and normalizing spatial data...")
         
         # Load ALL spatial data with user-selected normalization
+        # CRITICAL: Load in spatial_file_order to ensure consistent ordering
         self.spatial_data = {}
-        for var_name, filename in self.all_spatial_properties.items():
+        reference_shape = None
+        
+        # Determine the order to load files - use spatial_file_order if available
+        if hasattr(self, 'spatial_file_order') and self.spatial_file_order:
+            load_order = self.spatial_file_order
+            print(f"  📋 Loading spatial data in spatial_file_order: {load_order}")
+        else:
+            # Fallback: use all_spatial_properties keys (should preserve insertion order)
+            load_order = list(self.all_spatial_properties.keys())
+            print(f"  ⚠️ Using fallback order: {load_order}")
+        
+        # Track the order spatial_data is populated
+        spatial_data_order = []
+        
+        for var_name in load_order:
+            if var_name not in self.all_spatial_properties:
+                print(f"  ⚠️ WARNING: {var_name} in load_order but not in all_spatial_properties, skipping")
+                continue
+            
+            filename = self.all_spatial_properties[var_name]
             pass  # Loading spatial data
             with h5py.File(os.path.join(self.data_dir, filename), 'r') as hf:
                 raw_data = np.array(hf['data'])
+            
+            # Validate shape consistency
+            if reference_shape is None:
+                reference_shape = raw_data.shape
+                print(f"  📐 Reference shape established: {reference_shape} (from {var_name})")
+            else:
+                if raw_data.shape != reference_shape:
+                    print(f"  ⚠️ WARNING: {var_name} has shape {raw_data.shape}, expected {reference_shape}")
+                    print(f"     This will cause errors when stacking channels!")
             
             # Get normalization preference for this variable
             norm_type = self.normalization_preferences.get(var_name, 'minmax')
             pass  # Applying normalization
             
-            normalized_data, norm_params = normalize_dataset_inplace(raw_data, var_name, norm_type)
+            # Use per-layer normalization for all spatial channels
+            normalized_data, norm_params = normalize_dataset_inplace(raw_data, var_name, norm_type, per_layer=True)
+            
+            # Validate shape after normalization (should be unchanged)
+            if normalized_data.shape != raw_data.shape:
+                print(f"  ⚠️ WARNING: Normalization changed shape for {var_name}: {raw_data.shape} -> {normalized_data.shape}")
+            
             self.spatial_data[var_name] = normalized_data
             self.norm_params[var_name] = norm_params
+            spatial_data_order.append(var_name)
+            print(f"  ✅ Loaded {var_name} (order preserved)")
+        
+        # VERIFICATION: Verify spatial_data was populated in the correct order
+        if hasattr(self, 'spatial_file_order') and self.spatial_file_order:
+            # Check that all channels in spatial_file_order are in spatial_data_order
+            missing_channels = set(self.spatial_file_order) - set(spatial_data_order)
+            if missing_channels:
+                print(f"  ⚠️ WARNING: Some channels in spatial_file_order were not loaded: {missing_channels}")
+            else:
+                # Verify order matches (allowing for extra channels in spatial_data_order)
+                expected_order = [ch for ch in self.spatial_file_order if ch in spatial_data_order]
+                actual_order = [ch for ch in spatial_data_order if ch in self.spatial_file_order]
+                if expected_order == actual_order:
+                    print(f"  ✅ Verified: spatial_data loaded in correct order matching spatial_file_order")
+                else:
+                    print(f"  ⚠️ WARNING: spatial_data order mismatch!")
+                    print(f"     Expected (from spatial_file_order): {expected_order}")
+                    print(f"     Actual (load order): {actual_order}")
         
         # Load timeseries data with user-specified normalization
         self.timeseries_data = {}
         all_timeseries_vars = set(list(self.selected_controls.keys()) + list(self.selected_observations.keys()))
         
-        for var_name in all_timeseries_vars:
-            filename = f"batch_timeseries_data_{var_name}.h5"
-            print(f"  📈 Loading {var_name}...")
-            
-            with h5py.File(os.path.join(self.data_dir, filename), 'r') as hf:
-                raw_data = np.array(hf['data'])
-            
-            # Determine normalization type based on user preferences
-            norm_type = 'minmax'  # Default for backward compatibility
-            
-            # Check if it's a control variable with normalization preference
-            if var_name in getattr(self, 'control_normalization_preferences', {}):
-                norm_type = self.control_normalization_preferences[var_name]
-                print(f"    🎛️ Control {var_name}: Using {norm_type.upper()} normalization")
-            
-            # Check if it's an observation variable with normalization preference
-            elif var_name in getattr(self, 'observation_normalization_preferences', {}):
-                norm_type = self.observation_normalization_preferences[var_name]
-                print(f"    📊 Observation {var_name}: Using {norm_type.upper()} normalization")
-            
-            else:
-                print(f"    📈 {var_name}: Using default MIN-MAX normalization")
-            
-            normalized_data, norm_params = normalize_dataset_inplace(raw_data, var_name, norm_type)
-            self.timeseries_data[var_name] = normalized_data
-            self.norm_params[var_name] = norm_params
+        print(f"  📊 Selected controls: {list(self.selected_controls.keys())}")
+        print(f"  📊 Selected observations: {list(self.selected_observations.keys())}")
+        print(f"  📊 Total timeseries variables to load: {len(all_timeseries_vars)}")
+        
+        if not all_timeseries_vars:
+            print("  ⚠️ WARNING: No controls or observations selected!")
+            print("     Controls and observations will be empty.")
+        else:
+            for var_name in all_timeseries_vars:
+                filename = f"batch_timeseries_data_{var_name}.h5"
+                filepath = os.path.join(self.data_dir, filename)
+                print(f"  📈 Loading {var_name} from {filename}...")
+                
+                if not os.path.exists(filepath):
+                    print(f"    ❌ ERROR: File not found: {filepath}")
+                    raise FileNotFoundError(f"Timeseries data file not found: {filepath}")
+                
+                with h5py.File(filepath, 'r') as hf:
+                    raw_data = np.array(hf['data'])
+                
+                # Determine normalization type based on user preferences
+                norm_type = 'minmax'  # Default for backward compatibility
+                
+                # Check if it's a control variable with normalization preference
+                if var_name in getattr(self, 'control_normalization_preferences', {}):
+                    norm_type = self.control_normalization_preferences[var_name]
+                    print(f"    🎛️ Control {var_name}: Using {norm_type.upper()} normalization")
+                
+                # Check if it's an observation variable with normalization preference
+                elif var_name in getattr(self, 'observation_normalization_preferences', {}):
+                    norm_type = self.observation_normalization_preferences[var_name]
+                    print(f"    📊 Observation {var_name}: Using {norm_type.upper()} normalization")
+                
+                else:
+                    print(f"    📈 {var_name}: Using default MIN-MAX normalization")
+                
+                normalized_data, norm_params = normalize_dataset_inplace(raw_data, var_name, norm_type)
+                self.timeseries_data[var_name] = normalized_data
+                self.norm_params[var_name] = norm_params
+                print(f"    ✅ Loaded {var_name}: shape {normalized_data.shape}")
     
     def _create_tensors(self):
         """Create state, control, and observation tensors with deterministic channel ordering"""
@@ -1166,39 +1483,85 @@ class DataPreprocessingDashboard:
         self.global_channel_names = []
         
         # Use the deterministic spatial file order established during file loading
-        if hasattr(self, 'spatial_file_order'):
+        if hasattr(self, 'spatial_file_order') and self.spatial_file_order:
+            print(f"  📋 Building global_state_tensor using spatial_file_order: {self.spatial_file_order}")
             # Process channels in the exact canonical order
             for var_name in self.spatial_file_order:
                 if var_name in self.spatial_data:
                     all_state_channels.append(self.spatial_data[var_name])
                     self.global_channel_names.append(var_name)
-                    pass  # Channel added
+                    print(f"     Added channel {len(self.global_channel_names)-1}: {var_name}")
+                else:
+                    print(f"     ⚠️ WARNING: {var_name} in spatial_file_order but not in spatial_data!")
         else:
             # Fallback to original method if spatial_file_order not available
             print("  ⚠️ Using fallback channel ordering (less deterministic)")
             for var_name in sorted(self.all_spatial_properties.keys()):  # At least sort alphabetically
-                all_state_channels.append(self.spatial_data[var_name])
-                self.global_channel_names.append(var_name)
+                if var_name in self.spatial_data:
+                    all_state_channels.append(self.spatial_data[var_name])
+                    self.global_channel_names.append(var_name)
+                else:
+                    print(f"     ⚠️ WARNING: {var_name} not in spatial_data!")
         
         if all_state_channels:
+            # Debug: Print shapes of all channels before stacking
+            print("  🔍 Checking channel shapes before stacking...")
+            shapes = [arr.shape for arr in all_state_channels]
+            for var_name, shape in zip(self.global_channel_names, shapes):
+                print(f"    {var_name}: {shape}")
+            
+            # Check if all shapes match
+            if len(set(shapes)) > 1:
+                print("  ❌ ERROR: Channel shapes do not match!")
+                print("  Expected all channels to have the same shape: (n_sample, timesteps, Nx, Ny, Nz)")
+                raise ValueError(
+                    f"All input arrays must have the same shape. Found shapes: {dict(zip(self.global_channel_names, shapes))}"
+                )
+            
             self.global_state_tensor = np.stack(all_state_channels, axis=2)  # (n_sample, timesteps, ALL_channels, Nx, Ny, Nz)
             print(f"  🌐 Global state tensor shape: {self.global_state_tensor.shape}")
+            print(f"  📋 Global channel names (order in global_state_tensor): {self.global_channel_names}")
+            
+            # VERIFICATION: Verify that global_state_tensor channels match global_channel_names order
+            if len(self.global_channel_names) == self.global_state_tensor.shape[2]:
+                print(f"  ✅ Verified: global_state_tensor has {len(self.global_channel_names)} channels matching global_channel_names order")
+                # Verify spatial_file_order matches global_channel_names
+                if hasattr(self, 'spatial_file_order') and self.spatial_file_order:
+                    if self.global_channel_names != self.spatial_file_order:
+                        print(f"  ⚠️ WARNING: global_channel_names != spatial_file_order!")
+                        print(f"     global_channel_names: {self.global_channel_names}")
+                        print(f"     spatial_file_order: {self.spatial_file_order}")
+                        # This is OK if some channels in spatial_file_order are not in spatial_data
+                    else:
+                        print(f"  ✅ Verified: global_channel_names matches spatial_file_order")
+            else:
+                print(f"  ❌ ERROR: Channel count mismatch! global_channel_names has {len(self.global_channel_names)} channels, but tensor has {self.global_state_tensor.shape[2]} channels")
+                raise ValueError(f"Channel count mismatch in global_state_tensor!")
+            
             pass  # Global channels created
         
         # Step 2: Extract selected channels for training with explicit verification
         print("  🎯 Extracting selected channels for training with order verification...")
         if hasattr(self, 'selected_training_channels') and self.selected_training_channels:
-            # CRITICAL: Extract channels in the EXACT order user selected them
+            # CRITICAL: Extract channels in the EXACT order user selected them (UI order)
+            # Get user selection order (preserves UI checkbox order)
+            user_selection_order = self._get_selected_channel_order()
+            
+            if not user_selection_order:
+                print("  ❌ No channels selected for training!")
+                return
+            
+            print(f"  📋 User selection order: {user_selection_order}")
+            print(f"  📋 Global channel names order: {self.global_channel_names}")
+            
             selected_indices = []
             self.training_channel_names = []
             self.training_channel_mapping = {}  # Track exact mapping for verification
             
-            # Process in canonical order to maintain consistency
-            for var_name in self.global_channel_names:
-                if var_name in self.selected_training_channels:
+            # Extract channels in USER SELECTION ORDER, not canonical order
+            for training_idx, var_name in enumerate(user_selection_order):
+                if var_name in self.global_channel_names:
                     global_idx = self.global_channel_names.index(var_name)
-                    training_idx = len(selected_indices)  # Position in training tensor
-                    
                     selected_indices.append(global_idx)
                     self.training_channel_names.append(var_name)
                     self.training_channel_mapping[var_name] = {
@@ -1206,20 +1569,105 @@ class DataPreprocessingDashboard:
                         'training_index': training_idx,
                         'verified': True
                     }
-                    
-                    pass  # Training channel selected
+                    print(f"     Mapping: {var_name} -> global_idx={global_idx}, training_idx={training_idx}")
+                else:
+                    print(f"  ❌ ERROR: Selected channel '{var_name}' not found in global_channel_names!")
+                    print(f"     Available channels: {self.global_channel_names}")
+                    raise ValueError(f"Selected channel '{var_name}' not found in global_channel_names!")
+            
+            print(f"  📋 Selected indices (for extracting from global_state_tensor): {selected_indices}")
+            
+            # Verify order consistency
+            if self.training_channel_names != user_selection_order:
+                print(f"  ❌ ERROR: Channel order mismatch!")
+                print(f"     Expected (user selection): {user_selection_order}")
+                print(f"     Actual (training_channel_names): {self.training_channel_names}")
+                raise ValueError(f"Channel order mismatch! Expected {user_selection_order}, got {self.training_channel_names}")
             
             if selected_indices:
+                # CRITICAL: Extract channels using selected_indices
+                # selected_indices[i] is the index in global_state_tensor for training_channel_names[i]
                 self.state_tensor = self.global_state_tensor[:, :, selected_indices, :, :, :]
                 print(f"  🎯 Training state tensor shape: {self.state_tensor.shape}")
-                pass  # Training channels created
                 
-                # VERIFICATION: Print explicit channel-to-data mapping
-                print(f"\n  🔍 CHANNEL VERIFICATION:")
+                # CRITICAL VERIFICATION: Verify that the extracted tensor actually has channels in the correct order
+                # by sampling a small portion and checking if the order matches
+                print(f"\n  🔍 FINAL CHANNEL ORDER VERIFICATION:")
+                print(f"     Expected order (user selection): {user_selection_order}")
+                print(f"     Global channel order: {self.global_channel_names}")
+                print(f"     Selected indices: {selected_indices}")
+                print(f"     Training channel names: {self.training_channel_names}")
+                
+                # Verify that training_channel_names matches user_selection_order
+                if self.training_channel_names != user_selection_order:
+                    print(f"  ❌ CRITICAL ERROR: training_channel_names != user_selection_order!")
+                    print(f"     This should never happen - raising error")
+                    raise ValueError(f"Channel order mismatch! training_channel_names={self.training_channel_names}, user_selection_order={user_selection_order}")
+                
+                # Verify that selected_indices correctly maps to global_channel_names
                 for i, channel_name in enumerate(self.training_channel_names):
+                    expected_global_idx = self.global_channel_names.index(channel_name)
+                    actual_selected_idx = selected_indices[i]
+                    if expected_global_idx != actual_selected_idx:
+                        print(f"  ❌ CRITICAL ERROR: Index mismatch for {channel_name}!")
+                        print(f"     Expected global_idx={expected_global_idx}, got selected_indices[{i}]={actual_selected_idx}")
+                        raise ValueError(f"Index mismatch for {channel_name}: expected {expected_global_idx}, got {actual_selected_idx}")
+                    
                     mapping = self.training_channel_mapping[channel_name]
                     filename = f"batch_spatial_properties_{channel_name}.h5"
-                    print(f"    Channel {i}: {channel_name} ← {filename} (verified ✓)")
+                    print(f"     Channel {i}: {channel_name} ← {filename} (global_idx={mapping['global_index']}, training_idx={mapping['training_index']})")
+                    print(f"        Extracted from global_state_tensor[:, :, {mapping['global_index']}, ...]")
+                
+                # CRITICAL VERIFICATION: Sample state_tensor to verify channel order matches training_channel_names
+                if self.state_tensor.shape[2] == len(self.training_channel_names):
+                    print(f"\n  🔍 VERIFYING state_tensor channel order by sampling and denormalizing:")
+                    sample_size = min(100, self.state_tensor.shape[0])
+                    
+                    # Get normalization parameters for denormalization check
+                    if hasattr(self, 'norm_params'):
+                        print(f"     Denormalizing channels to verify physical ranges:")
+                        for ch_idx in range(self.state_tensor.shape[2]):
+                            expected_name = self.training_channel_names[ch_idx]
+                            sample_data = self.state_tensor[:sample_size, 0, ch_idx, :, :, :]
+                            sample_mean = np.nanmean(sample_data)
+                            sample_min = np.nanmin(sample_data)
+                            sample_max = np.nanmax(sample_data)
+                            
+                            # Try to denormalize and check physical range
+                            if expected_name in self.norm_params:
+                                params = self.norm_params[expected_name]
+                                if params.get('type') == 'minmax':
+                                    min_val = float(params.get('min', 0))
+                                    max_val = float(params.get('max', 1))
+                                    denorm_min = sample_min * (max_val - min_val) + min_val
+                                    denorm_max = sample_max * (max_val - min_val) + min_val
+                                    denorm_mean = sample_mean * (max_val - min_val) + min_val
+                                    expected_range_str = f"[{min_val:.6e}, {max_val:.6e}]"
+                                    denorm_range_str = f"[{denorm_min:.6e}, {denorm_max:.6e}]"
+                                    in_range = (denorm_min >= min_val * 0.9 and denorm_max <= max_val * 1.1)
+                                    range_status = "IN_RANGE" if in_range else "OUT_OF_RANGE"
+                                    print(f"     Channel {ch_idx} ({expected_name}): norm_mean={sample_mean:.6f}")
+                                    print(f"        Denorm: {denorm_range_str}, Expected: {expected_range_str} [{range_status}]")
+                                else:
+                                    print(f"     Channel {ch_idx} ({expected_name}): norm_mean={sample_mean:.6f} (log normalization)")
+                            else:
+                                print(f"     Channel {ch_idx} ({expected_name}): norm_mean={sample_mean:.6f} (no norm params)")
+                    else:
+                        # Fallback to simple mean check
+                        for ch_idx in range(self.state_tensor.shape[2]):
+                            expected_name = self.training_channel_names[ch_idx]
+                            sample_data = self.state_tensor[:sample_size, 0, ch_idx, :, :, :]
+                            sample_mean = np.mean(sample_data)
+                            print(f"     Channel {ch_idx}: mean={sample_mean:.6f}, expected={expected_name}")
+                    
+                    print(f"  ✅ Verified: state_tensor has {len(self.training_channel_names)} channels matching training_channel_names order")
+                else:
+                    print(f"  ❌ ERROR: state_tensor channel count mismatch!")
+                    print(f"     Expected {len(self.training_channel_names)} channels, got {self.state_tensor.shape[2]}")
+                    raise ValueError(f"Channel count mismatch in state_tensor!")
+                
+                print(f"  ✅ Channel order verified: User selection order matches tensor order!")
+                print(f"  ✅ Selected indices correctly map to global channel order!")
                 
             else:
                 print("  ❌ No channels selected for training!")
@@ -1231,31 +1679,55 @@ class DataPreprocessingDashboard:
         
         # Create control tensor
         control_components = []
-        for var_name, config in self.selected_controls.items():
-            data = self.timeseries_data[var_name]
-            selected_data = data[:, :, config['wells']]  # Select specific wells
+        if self.selected_controls:
+            print(f"  🎛️ Creating control tensor from {len(self.selected_controls)} control variables...")
+            for var_name, config in self.selected_controls.items():
+                if var_name not in self.timeseries_data:
+                    print(f"    ❌ ERROR: Control variable '{var_name}' not found in timeseries_data!")
+                    print(f"       Available timeseries variables: {list(self.timeseries_data.keys())}")
+                    raise KeyError(f"Control variable '{var_name}' not found in timeseries_data")
+                
+                data = self.timeseries_data[var_name]
+                selected_data = data[:, :, config['wells']]  # Select specific wells
+                print(f"    ✅ {var_name}: Selected wells {config['wells']}, data shape: {selected_data.shape}")
+                
+                # Flatten well dimension
+                for well_idx in range(selected_data.shape[2]):
+                    control_components.append(selected_data[:, :, well_idx])
             
-            # Flatten well dimension
-            for well_idx in range(selected_data.shape[2]):
-                control_components.append(selected_data[:, :, well_idx])
+            if control_components:
+                self.control_tensor = np.stack(control_components, axis=2)
+                print(f"  🎛️ Control tensor shape: {self.control_tensor.shape}")
+            else:
+                print(f"  ⚠️ WARNING: No control components created!")
+        else:
+            print(f"  ⚠️ No controls selected - control tensor will be empty")
         
-        if control_components:
-            self.control_tensor = np.stack(control_components, axis=2)
-            print(f"  🎛️ Control tensor shape: {self.control_tensor.shape}")
-        
-        # Create observation tensor (Observation order: [Injector_BHP(0-2), Gas_Production(3-5), Water_Production(6-8)])
+        # Create observation tensor (Observation order defined in config.yaml data.observations.order)
         obs_components = []
-        for var_name, config in self.selected_observations.items():
-            data = self.timeseries_data[var_name]
-            selected_data = data[:, :, config['wells']]  # Select specific wells
+        if self.selected_observations:
+            print(f"  📊 Creating observation tensor from {len(self.selected_observations)} observation variables...")
+            for var_name, config in self.selected_observations.items():
+                if var_name not in self.timeseries_data:
+                    print(f"    ❌ ERROR: Observation variable '{var_name}' not found in timeseries_data!")
+                    print(f"       Available timeseries variables: {list(self.timeseries_data.keys())}")
+                    raise KeyError(f"Observation variable '{var_name}' not found in timeseries_data")
+                
+                data = self.timeseries_data[var_name]
+                selected_data = data[:, :, config['wells']]  # Select specific wells
+                print(f"    ✅ {var_name}: Selected wells {config['wells']}, data shape: {selected_data.shape}")
+                
+                # Flatten well dimension
+                for well_idx in range(selected_data.shape[2]):
+                    obs_components.append(selected_data[:, :, well_idx])
             
-            # Flatten well dimension
-            for well_idx in range(selected_data.shape[2]):
-                obs_components.append(selected_data[:, :, well_idx])
-        
-        if obs_components:
-            self.observation_tensor = np.stack(obs_components, axis=2)
-            print(f"  📊 Observation tensor shape: {self.observation_tensor.shape}")
+            if obs_components:
+                self.observation_tensor = np.stack(obs_components, axis=2)
+                print(f"  📊 Observation tensor shape: {self.observation_tensor.shape}")
+            else:
+                print(f"  ⚠️ WARNING: No observation components created!")
+        else:
+            print(f"  ⚠️ No observations selected - observation tensor will be empty")
         
         # Automatically continue with sliding window and train-test split
         self._apply_sliding_window()
@@ -1287,9 +1759,30 @@ class DataPreprocessingDashboard:
         
         # Apply sliding window to all tensors
         # Create dynamic channel lists based on selected channels
+        # CRITICAL: channel_data_slt order must match training_channel_names order
         self.channel_data_slt = []  # List of lists for each channel
         for i in range(n_channels):
             self.channel_data_slt.append([])
+        
+        # Verify channel order consistency before sliding window
+        if hasattr(self, 'training_channel_names') and len(self.training_channel_names) == n_channels:
+            print(f"  🔍 Sliding window: Using channel order {self.training_channel_names}")
+            print(f"  📋 VERIFICATION: channel_data_slt[channel_idx] will contain data for training_channel_names[channel_idx]")
+            # Verify state_tensor channel order matches training_channel_names
+            if hasattr(self, 'state_tensor') and self.state_tensor.shape[2] == n_channels:
+                print(f"  ✅ Verified: state_tensor has {n_channels} channels matching training_channel_names")
+            else:
+                print(f"  ⚠️ WARNING: state_tensor channel count mismatch!")
+                if hasattr(self, 'state_tensor'):
+                    print(f"     state_tensor channels: {self.state_tensor.shape[2]}, expected: {n_channels}")
+                else:
+                    print(f"     state_tensor not found!")
+        else:
+            print(f"  ⚠️ WARNING: training_channel_names not available or count mismatch!")
+            if hasattr(self, 'training_channel_names'):
+                print(f"     training_channel_names: {self.training_channel_names}, n_channels: {n_channels}")
+            else:
+                print(f"     training_channel_names not found!")
         
         # Legacy compatibility names (for backward compatibility with existing code)
         # Initialize these as empty lists regardless of selection
@@ -1308,9 +1801,31 @@ class DataPreprocessingDashboard:
             indt_k = indt + k
             
             # State data (split by channels dynamically)
+            # CRITICAL: channel_idx corresponds to training_channel_names[channel_idx]
             for channel_idx in range(n_channels):
                 channel_data = self.state_tensor[:, indt_k, channel_idx, :, :, :]
                 self.channel_data_slt[channel_idx].append(channel_data)
+                
+                # VERIFICATION: On first iteration after all channels are populated, verify channel order
+                if k == 0 and channel_idx == n_channels - 1 and hasattr(self, 'training_channel_names'):
+                    # Wait until all channels are populated before verification
+                    print(f"  🔍 VERIFYING channel_data_slt order:")
+                    print(f"     Sampling state_tensor directly to verify channel order:")
+                    sample_size = min(10, self.state_tensor.shape[0])
+                    for verify_idx in range(n_channels):
+                        verify_name = self.training_channel_names[verify_idx] if verify_idx < len(self.training_channel_names) else f"Channel{verify_idx}"
+                        # Sample from state_tensor directly
+                        state_sample = self.state_tensor[:sample_size, indt_k[0], verify_idx, :, :, :]
+                        state_mean = np.mean(state_sample)
+                        # Sample from channel_data_slt (check if it exists)
+                        if verify_idx < len(self.channel_data_slt) and len(self.channel_data_slt[verify_idx]) > 0:
+                            channel_sample = self.channel_data_slt[verify_idx][0][:sample_size]
+                            channel_mean = np.mean(channel_sample)
+                            match_status = "MATCH" if abs(state_mean - channel_mean) < 1e-6 else "MISMATCH"
+                            print(f"     channel_data_slt[{verify_idx}] = {verify_name}: state_mean={state_mean:.6f}, channel_mean={channel_mean:.6f} [{match_status}]")
+                        else:
+                            print(f"     channel_data_slt[{verify_idx}] = {verify_name}: state_mean={state_mean:.6f} (channel_data_slt not populated yet)")
+                    print(f"  ✅ Verified: channel_data_slt order matches training_channel_names")
                 
                 # Legacy compatibility: map to SW/SG/PRES if they match
                 if hasattr(self, 'training_channel_names'):
@@ -1360,8 +1875,17 @@ class DataPreprocessingDashboard:
         self.Nx, self.Ny, self.Nz = Nx, Ny, Nz
         self.num_well = len([well for config in self.selected_controls.values() for well in config['wells']]) + \
                         len([well for config in self.selected_observations.values() for well in config['wells']])
-        self.num_prod = 3  # Assume 3 producers
-        self.num_inj = 3   # Assume 3 injectors
+        # Load num_prod and num_inj from config if available
+        try:
+            if self.config:
+                self.num_prod = self.config.data.get('num_prod', 3)
+                self.num_inj = self.config.data.get('num_inj', 3)
+            else:
+                self.num_prod = 3  # Default fallback
+                self.num_inj = 3   # Default fallback
+        except:
+            self.num_prod = 3  # Default fallback
+            self.num_inj = 3   # Default fallback
         self.n_channels = n_channels
         
         print(f"Sliding window applied: {len(self.channel_data_slt[0])} time steps")
@@ -1371,17 +1895,40 @@ class DataPreprocessingDashboard:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Pass the dynamic channel data to train_split_data
-        self.STATE_train, self.BHP_train, self.Yobs_train, self.STATE_eval, self.BHP_eval, self.Yobs_eval = train_split_data(
+        result = train_split_data(
             self.SW_slt, self.SG_slt, self.PRES_slt, self.BHP_slt, self.Yobs_slt,
             self.num_t_slt, self.Nx, self.Ny, self.Nz, self.num_well, self.num_prod, self.num_inj,
             self.n_channels, device, channel_data_slt=getattr(self, 'channel_data_slt', None)
         )
+        
+        # Check if train_split_data returned valid data
+        if result is None or result[0] is None:
+            print("❌ ERROR: train_split_data returned None - data splitting failed!")
+            raise ValueError("Failed to split data into training and evaluation sets. Check channel_data_slt and other inputs.")
+        
+        self.STATE_train, self.BHP_train, self.Yobs_train, self.STATE_eval, self.BHP_eval, self.Yobs_eval = result
+        
+        # Validate that we got non-empty lists
+        if not self.STATE_train or len(self.STATE_train) == 0:
+            print("❌ ERROR: STATE_train is empty after train_split_data!")
+            print(f"   channel_data_slt length: {len(self.channel_data_slt) if hasattr(self, 'channel_data_slt') else 'N/A'}")
+            print(f"   n_channels: {self.n_channels}")
+            print(f"   num_t_slt: {self.num_t_slt}")
+            raise ValueError("STATE_train is empty - check channel_data_slt and train_split_data logic")
+        
+        print(f"✅ Data splitting successful: {len(self.STATE_train)} training batches, {len(self.STATE_eval)} eval batches")
     
     def _print_final_results(self):
         """Print final tensor shapes and summary"""
         print("Data preprocessing completed!")
-        if hasattr(self, 'STATE_train') and self.STATE_train:
-            print(f"Tensors: STATE {self.STATE_train[0].shape}, BHP {self.BHP_train[0].shape}, Yobs {self.Yobs_train[0].shape}")
+        if hasattr(self, 'STATE_train') and self.STATE_train and len(self.STATE_train) > 0:
+            state_info = f"STATE {self.STATE_train[0].shape}"
+            bhp_info = f"BHP {self.BHP_train[0].shape}" if hasattr(self, 'BHP_train') and self.BHP_train and len(self.BHP_train) > 0 else "BHP (empty)"
+            yobs_info = f"Yobs {self.Yobs_train[0].shape}" if hasattr(self, 'Yobs_train') and self.Yobs_train and len(self.Yobs_train) > 0 else "Yobs (empty)"
+            print(f"Tensors: {state_info}, {bhp_info}, {yobs_info}")
+        elif hasattr(self, 'STATE_train'):
+            print(f"⚠️ WARNING: STATE_train is empty or not properly initialized!")
+            print(f"   STATE_train length: {len(self.STATE_train) if self.STATE_train else 0}")
         print(f"Grid: {self.Nx}×{self.Ny}×{self.Nz}, Channels: {self.n_channels}, Timeseries Variables: {self.num_well}, Steps: {self.nsteps}")
         print("Ready for model training!")
     
@@ -1485,6 +2032,55 @@ class DataPreprocessingDashboard:
         if not hasattr(self, 'STATE_train'):
             print("No processed data available. Please complete processing first.")
             return False
+        
+        # CRITICAL VERIFICATION: Verify STATE_train channel order before assigning to globals
+        if self.STATE_train and len(self.STATE_train) > 0:
+            first_tensor = self.STATE_train[0]
+            if hasattr(self, 'training_channel_names') and len(self.training_channel_names) == first_tensor.shape[1]:
+                print(f"\n  🔍 VERIFYING STATE_train channel order before assigning to globals:")
+                sample_size = min(100, first_tensor.shape[0])
+                
+                # Get normalization parameters for denormalization check
+                if hasattr(self, 'norm_params'):
+                    print(f"     Denormalizing channels to verify physical ranges:")
+                    for ch_idx in range(first_tensor.shape[1]):
+                        expected_name = self.training_channel_names[ch_idx]
+                        sample_data = first_tensor[:sample_size, ch_idx, :, :, :].cpu().numpy()
+                        sample_mean = np.nanmean(sample_data)
+                        sample_min = np.nanmin(sample_data)
+                        sample_max = np.nanmax(sample_data)
+                        
+                        # Try to denormalize and check physical range
+                        if expected_name in self.norm_params:
+                            params = self.norm_params[expected_name]
+                            if params.get('type') == 'minmax':
+                                min_val = float(params.get('min', 0))
+                                max_val = float(params.get('max', 1))
+                                denorm_min = sample_min * (max_val - min_val) + min_val
+                                denorm_max = sample_max * (max_val - min_val) + min_val
+                                denorm_mean = sample_mean * (max_val - min_val) + min_val
+                                expected_range_str = f"[{min_val:.6e}, {max_val:.6e}]"
+                                denorm_range_str = f"[{denorm_min:.6e}, {denorm_max:.6e}]"
+                                in_range = (denorm_min >= min_val * 0.9 and denorm_max <= max_val * 1.1)
+                                range_status = "IN_RANGE" if in_range else "OUT_OF_RANGE"
+                                print(f"     Channel {ch_idx} ({expected_name}): norm_mean={sample_mean:.6f}")
+                                print(f"        Denorm: {denorm_range_str}, Expected: {expected_range_str} [{range_status}]")
+                                
+                                if not in_range:
+                                    print(f"        ⚠️ WARNING: Channel {ch_idx} denormalized range does not match expected range for {expected_name}!")
+                            else:
+                                print(f"     Channel {ch_idx} ({expected_name}): norm_mean={sample_mean:.6f} (log normalization)")
+                        else:
+                            print(f"     Channel {ch_idx} ({expected_name}): norm_mean={sample_mean:.6f} (no norm params)")
+                    
+                    print(f"  ✅ Verified: STATE_train has {len(self.training_channel_names)} channels")
+                else:
+                    # Fallback to simple mean check
+                    for ch_idx in range(first_tensor.shape[1]):
+                        expected_name = self.training_channel_names[ch_idx] if ch_idx < len(self.training_channel_names) else f"Channel{ch_idx}"
+                        sample_data = first_tensor[:sample_size, ch_idx, :, :, :].cpu().numpy()
+                        sample_mean = np.mean(sample_data)
+                        print(f"     Channel {ch_idx}: mean={sample_mean:.6f}, expected={expected_name}")
             
         # Get the notebook's global namespace
         import inspect
@@ -2357,6 +2953,17 @@ def load_processed_data(filepath=None, data_dir='./processed_data/', n_channels=
                         if norm_params:
                             norm_params['selection_summary']['training_channels'] = training_channel_names
                             print(f"✅ Loaded training_channel_names: {training_channel_names}")
+                            print(f"   📊 Channel order preserved: {len(training_channel_names)} channels")
+                            
+                            # Validate that loaded order matches tensor channels
+                            if STATE_train and len(STATE_train) > 0:
+                                tensor_n_channels = STATE_train[0].shape[1] if len(STATE_train[0].shape) == 5 else 0
+                                if tensor_n_channels > 0 and len(training_channel_names) != tensor_n_channels:
+                                    print(f"   ⚠️ WARNING: Channel count mismatch!")
+                                    print(f"      training_channel_names: {len(training_channel_names)}")
+                                    print(f"      Tensor channels: {tensor_n_channels}")
+                                else:
+                                    print(f"   ✅ Channel count verified: {len(training_channel_names)} channels")
         
         # Prepare return dictionary
         loaded_data = {

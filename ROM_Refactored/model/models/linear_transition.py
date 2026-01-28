@@ -17,6 +17,17 @@ class LinearTransitionModel(nn.Module):
         self.u_dim = config['model']['u_dim']
         self.num_prob = config['data']['num_prod']
         self.num_inj = config['data']['num_inj']
+        
+        # Get number of observations from config if available, otherwise compute from well counts
+        # Note: Observation structure is defined in config.yaml data.observations
+        obs_config = config.get('data', {}).get('observations', {})
+        if obs_config and 'num_observations' in obs_config:
+            self.num_observations = obs_config['num_observations']
+        else:
+            # Fallback: compute from well counts (assumes 2 observations per producer + 1 per injector)
+            # This matches the default structure: ENERGYRATE + WATRATRC per producer, BHP per injector
+            self.num_observations = self.num_prob * 2 + self.num_inj
+        
         self.trans_encoder = create_trans_encoder(
             self.latent_dim + 1, 
             config['transition']['encoder_hidden_dims']
@@ -28,9 +39,9 @@ class LinearTransitionModel(nn.Module):
         self.Bt_layer = nn.Linear(self.latent_dim, self.latent_dim * self.u_dim)
         self.Bt_layer.apply(weights_init)
         
-        self.Ct_layer = nn.Linear(self.latent_dim, (self.num_prob*2+ self.num_inj)* self.latent_dim)
+        self.Ct_layer = nn.Linear(self.latent_dim, self.num_observations * self.latent_dim)
         self.Ct_layer.apply(weights_init)
-        self.Dt_layer = nn.Linear(self.latent_dim, (self.num_prob*2+ self.num_inj) * self.u_dim)
+        self.Dt_layer = nn.Linear(self.latent_dim, self.num_observations * self.u_dim)
         self.Dt_layer.apply(weights_init)
 
     def forward_nsteps(self, zt, dt, U):
@@ -42,8 +53,8 @@ class LinearTransitionModel(nn.Module):
 #         print(hz.shape)
         At = self.At_layer(hz).view(-1, self.latent_dim, self.latent_dim)
         Bt = self.Bt_layer(hz).view(-1, self.latent_dim, self.u_dim)
-        Ct = self.Ct_layer(hz).view(-1, self.num_prob*2+ self.num_inj, self.latent_dim)
-        Dt = self.Dt_layer(hz).view(-1, self.num_prob*2+ self.num_inj, self.u_dim)
+        Ct = self.Ct_layer(hz).view(-1, self.num_observations, self.latent_dim)
+        Dt = self.Dt_layer(hz).view(-1, self.num_observations, self.u_dim)
 
         Zt_k =[]
         Yt_k = []
@@ -69,8 +80,8 @@ class LinearTransitionModel(nn.Module):
         At = self.At_layer(hz).view(-1, self.latent_dim, self.latent_dim)
         Bt = self.Bt_layer(hz).view(-1, self.latent_dim, self.u_dim)
 
-        Ct = self.Ct_layer(hz).view(-1, self.num_prob*2+ self.num_inj, self.latent_dim)
-        Dt = self.Dt_layer(hz).view(-1, self.num_prob*2+ self.num_inj, self.u_dim)
+        Ct = self.Ct_layer(hz).view(-1, self.num_observations, self.latent_dim)
+        Dt = self.Dt_layer(hz).view(-1, self.num_observations, self.u_dim)
         
         ut_dt = ut * dt
 
@@ -96,10 +107,15 @@ class LinearMultiTransitionModel(nn.Module):
         self.Bt_layer = nn.Linear(self.latent_dim, self.latent_dim * self.u_dim)
         self.Bt_layer.apply(weights_init)
         
-        self.Ct_layer = nn.Linear(self.latent_dim, (self.num_prob*2+ self.num_inj)* self.latent_dim)
+        # Calculate observation dimension (assumes 2 observations per producer + 1 per injector)
+        # Note: For config-based approach, use LinearTransitionModel instead
+        # Observation structure should ideally come from config.yaml data.observations
+        num_observations = self.num_prob * 2 + self.num_inj
+        self.Ct_layer = nn.Linear(self.latent_dim, num_observations * self.latent_dim)
         self.Ct_layer.apply(weights_init)
-        self.Dt_layer = nn.Linear(self.latent_dim, (self.num_prob*2+ self.num_inj) * self.u_dim)
+        self.Dt_layer = nn.Linear(self.latent_dim, num_observations * self.u_dim)
         self.Dt_layer.apply(weights_init)
+        self.num_observations = num_observations
 
     def forward_nsteps(self, zt, dt, U):
 #         print(dt.shape)
@@ -110,8 +126,8 @@ class LinearMultiTransitionModel(nn.Module):
 #         print(hz.shape)
         At = self.At_layer(hz).view(-1, self.latent_dim, self.latent_dim)
         Bt = self.Bt_layer(hz).view(-1, self.latent_dim, self.u_dim)
-        Ct = self.Ct_layer(hz).view(-1, self.num_prob*2+ self.num_inj, self.latent_dim)
-        Dt = self.Dt_layer(hz).view(-1, self.num_prob*2+ self.num_inj, self.u_dim)
+        Ct = self.Ct_layer(hz).view(-1, self.num_observations, self.latent_dim)
+        Dt = self.Dt_layer(hz).view(-1, self.num_observations, self.u_dim)
 
         Zt_k =[]
         Yt_k = []
@@ -137,8 +153,8 @@ class LinearMultiTransitionModel(nn.Module):
         At = self.At_layer(hz).view(-1, self.latent_dim, self.latent_dim)
         Bt = self.Bt_layer(hz).view(-1, self.latent_dim, self.u_dim)
 
-        Ct = self.Ct_layer(hz).view(-1, self.num_prob*2+ self.num_inj, self.latent_dim)
-        Dt = self.Dt_layer(hz).view(-1, self.num_prob*2+ self.num_inj, self.u_dim)
+        Ct = self.Ct_layer(hz).view(-1, self.num_observations, self.latent_dim)
+        Dt = self.Dt_layer(hz).view(-1, self.num_observations, self.u_dim)
         
         ut_dt = ut * dt
 

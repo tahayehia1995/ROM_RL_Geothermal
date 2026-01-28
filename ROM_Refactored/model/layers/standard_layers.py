@@ -77,7 +77,7 @@ class ResidualConv3D(nn.Module):
 
         self.conv1 = nn.Conv3d(in_channels=in_filter, out_channels=out_filter, kernel_size=kernel_size, stride=stride, padding=(1, 1, 1))
         self.bn1 = nn.BatchNorm3d(out_filter)
-        self.conv2 = nn.Conv3d(in_channels=out_filter, out_channels=out_filter, kernel_size=kernel_size, stride=stride, padding=(1, 1, 1))  # Fixed: conv2 input should be out_filter, not in_filter
+        self.conv2 = nn.Conv3d(in_channels=in_filter, out_channels=out_filter, kernel_size=kernel_size, stride=stride, padding=(1, 1, 1))
         self.bn2 = nn.BatchNorm3d(out_filter)
 
     def forward(self, x):

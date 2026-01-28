@@ -1,31 +1,33 @@
 """
 Factory for creating transition models based on configuration
+Note: Only linear transition model is supported. FNO has been removed.
 """
 
 from .linear_transition import LinearTransitionModel, LinearMultiTransitionModel
-from .fno_transition import FNOTransitionModel
-from .hybrid_fno_transition import HybridFNOTransitionModel
 
 
 def create_transition_model(config):
     """
-    Create transition model based on configuration
+    Create transition model based on configuration.
+    Only linear transition model is supported (FNO removed).
     
     Args:
         config: Configuration object with transition type
         
     Returns:
-        Transition model instance
+        LinearTransitionModel instance
     """
     transition_type = config['transition'].get('type', 'linear').lower()
     
-    if transition_type == 'linear':
-        return LinearTransitionModel(config)
-    elif transition_type == 'fno':
-        return FNOTransitionModel(config)
-    elif transition_type == 'hybrid_fno' or transition_type == 'hybrid':
-        return HybridFNOTransitionModel(config)
-    else:
-        raise ValueError(f"Unknown transition type: {transition_type}. "
-                        f"Supported types: 'linear', 'fno', 'hybrid_fno'")
+    # Only support linear transition model
+    if transition_type != 'linear':
+        import warnings
+        warnings.warn(
+            f"⚠️ Transition type '{transition_type}' is not supported. "
+            f"FNO and hybrid_fno have been removed. Using 'linear' transition model.",
+            UserWarning
+        )
+        transition_type = 'linear'
+    
+    return LinearTransitionModel(config)
 

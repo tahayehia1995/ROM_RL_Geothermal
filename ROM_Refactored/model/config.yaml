@@ -70,38 +70,8 @@ decoder:
 # TRANSITION MODEL CONFIGURATION
 # ============================================================================
 transition:
-  type: 'linear'                   # Transition model type: 'linear', 'fno', 'hybrid_fno'
+  type: 'linear'                   # Transition model type: 'linear' only (FNO removed)
   encoder_hidden_dims: [300, 300,300] # Hidden dimensions for linear transition encoder
-  
-  # FNO (Fourier Neural Operator) configuration
-  fno:
-    width: 32                      # Channel width for FNO layers
-    modes_x: 8                     # Fourier modes in X direction
-    modes_y: 8                     # Fourier modes in Y direction
-    modes_z: 4                     # Fourier modes in Z direction
-    n_layers: 4                    # Number of FNO layers
-    control_injection: 'spatial_encoding'  # Control injection method: 'spatial_encoding', 'well_specific_spatial', 'global_conditioning'
-    well_specific_spatial:
-      influence_radius: 3.0        # Radius of well influence
-      influence_function: 'gaussian' # Influence function: 'gaussian', 'exponential', 'linear', 'step'
-      influence_strength: 1.0       # Strength of influence
-      use_3d_influence: true        # Use 3D influence patterns
-      z_penetration_mode: 'full'    # Z penetration mode: 'full', 'partial'
-      normalization: 'max_normalize' # Normalization method
-      per_well_scaling: true        # Apply per-well scaling
-      injector_scaling: 1.2         # Scaling for injectors
-      producer_scaling: 0.8         # Scaling for producers
-      temporal_weighting: true      # Apply temporal weighting
-      model_interference: false     # Model well interference
-      interference_threshold: 5.0   # Threshold for interference
-  
-  # Hybrid FNO configuration
-  hybrid_fno:
-    fno_weight: 0.7                # Weight for FNO component
-    linear_weight: 0.3              # Weight for linear component
-    use_learned_blending: false     # Use learned blending weights
-    forward_mode: 'fno_only'        # Forward mode: 'fno_only', 'latent_only', 'blended'
-    predict_mode: 'fno_only'        # Prediction mode: 'fno_only', 'latent_only', 'blended'
 
 # ============================================================================
 # TRAINING HYPERPARAMETERS

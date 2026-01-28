@@ -5,6 +5,7 @@ saved_models/
 grid_saved_models/
 ROM_Refactored/processed_data/
 timing_logs/
+Original_ROM/
 
 # Python cache
 __pycache__/

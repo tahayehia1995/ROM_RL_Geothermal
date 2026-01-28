@@ -24,7 +24,8 @@ class ModelEvaluationMetrics:
     - APE (Absolute Percentage Error)
     """
     
-    def __init__(self, state_pred, state_true, yobs_pred, yobs_true, channel_names=None, obs_names=None):
+    def __init__(self, state_pred, state_true, yobs_pred, yobs_true, channel_names=None, obs_names=None, 
+                 obs_units=None, obs_variable_map=None, obs_indices_map=None, true_data_is_raw=False):
         """
         Initialize with prediction and ground truth data
         
@@ -35,6 +36,9 @@ class ModelEvaluationMetrics:
             yobs_true: True observations (num_case, n_obs, num_tstep)
             channel_names: Names of state channels (optional)
             obs_names: Names of observation variables (optional)
+            obs_units: Units for each observation (optional, list of strings)
+            obs_variable_map: Mapping from observation index to variable name (optional, dict)
+            obs_indices_map: Mapping from variable name to observation indices (optional, dict)
         """
         self.state_pred = state_pred
         self.state_true = state_true
@@ -42,6 +46,10 @@ class ModelEvaluationMetrics:
         self.yobs_true = yobs_true
         self.channel_names = channel_names if channel_names else ["Channel " + str(i) for i in range(state_pred.shape[2])]
         self.obs_names = obs_names if obs_names else ["Observation " + str(i) for i in range(yobs_pred.shape[2])]
+        self.obs_units = obs_units if obs_units else None
+        self.obs_variable_map = obs_variable_map if obs_variable_map else {}
+        self.obs_indices_map = obs_indices_map if obs_indices_map else {}
+        self.true_data_is_raw = true_data_is_raw
         
         # Cache for computed metrics to avoid recalculation
         self.spatial_metrics_cache = {}
@@ -80,13 +88,34 @@ class ModelEvaluationMetrics:
         Returns:
             str: Unit string for the observation
         """
-        # Standard observation order: [Inj1 BHP, Inj2 BHP, Inj3 BHP, Prod1 Gas, Prod2 Gas, Prod3 Gas, Prod1 Water, Prod2 Water, Prod3 Water]
+        # Try to get unit from config-based mapping first
+        if self.obs_units and obs_idx < len(self.obs_units):
+            return self.obs_units[obs_idx]
+        
+        # Try to get unit from variable mapping
+        var_name = self.obs_variable_map.get(obs_idx, None)
+        if var_name:
+            # Try to load from config if available
+            try:
+                from utilities.config_loader import load_config
+                config = load_config('config.yaml')
+                obs_config = config.get('data', {}).get('observations', {})
+                if obs_config and 'variables' in obs_config:
+                    var_config = obs_config['variables'].get(var_name, {})
+                    if 'unit_display' in var_config:
+                        return var_config['unit_display']
+            except:
+                pass
+        
+        # Fallback to hard-coded defaults (for backward compatibility)
+        # Fallback to hard-coded defaults (for backward compatibility)
+        # Note: Observation indices are defined in config.yaml data.observations.variables
         if obs_idx < 3:
-            return 'psi'       # BHP observations (indices 0-2)
+            return 'psi'       # Default BHP observations
         elif obs_idx < 6:
-            return 'BTU/Day'   # Energy production observations (indices 3-5)
+            return 'BTU/Day'   # Default energy production observations
         elif obs_idx < 9:
-            return 'bbl/day'   # Water production observations (indices 6-8)
+            return 'bbl/day'   # Default water production observations
         else:
             return 'units'     # Generic fallback for additional observations
     
@@ -246,34 +275,71 @@ class ModelEvaluationMetrics:
         true = self.state_true[case_idx, field_idx, timestep_idx, :, :, layer_idx].cpu().numpy()
         
         # Denormalize if normalization parameters provided
+        # CRITICAL: Use channel_names[field_idx] to get correct field_key for normalization lookup
         if norm_params and field_idx < len(self.channel_names):
-            field_key = self.channel_names[field_idx]
+            channel_name = self.channel_names[field_idx]
+            field_key = channel_name.upper()  # Normalize to uppercase for lookup
+            
+            # Try alternative keys if exact match not found
+            if field_key not in norm_params:
+                alternative_keys = []
+                if field_key == 'PERMI':
+                    alternative_keys = ['PERM', 'PERMEABILITY']
+                elif field_key == 'PERM':
+                    alternative_keys = ['PERMI', 'PERMEABILITY']
+                elif field_key == 'VPOROSGEO':
+                    alternative_keys = ['VPOROSTGEO', 'VPOROS', 'POROSITY']
+                elif field_key == 'VPOROSTGEO':
+                    alternative_keys = ['VPOROSGEO', 'VPOROS', 'POROSITY']
+                elif field_key == 'TEMP':
+                    alternative_keys = ['TEMPERATURE']
+                elif field_key == 'TEMPERATURE':
+                    alternative_keys = ['TEMP']
+                
+                for alt_key in alternative_keys:
+                    if alt_key in norm_params:
+                        field_key = alt_key
+                        break
+            
             if field_key in norm_params:
                 params = norm_params[field_key]
-                if params.get('type') == 'none':
+                
+                # Check if per-layer normalization was used
+                if params.get('per_layer', False):
+                    # Use denormalize_data function with layer_idx for per-layer denormalization
+                    from data_preprocessing.normalization import denormalize_data
+                    pred = denormalize_data(pred, params, layer_idx=layer_idx)
+                    if not self.true_data_is_raw:
+                        true = denormalize_data(true, params, layer_idx=layer_idx)
+                elif params.get('type') == 'none':
                     # Data was not normalized, use as-is
                     pass
                 elif params.get('type') == 'log':
-                    # Reverse log normalization
+                    # Reverse log normalization (global)
                     log_min = params['log_min']
                     log_max = params['log_max']
                     
                     # Step 1: Reverse min-max scaling of log data
                     pred_log = pred * (log_max - log_min) + log_min
-                    true_log = true * (log_max - log_min) + log_min
+                    if self.true_data_is_raw:
+                        true_log = None
+                    else:
+                        true_log = true * (log_max - log_min) + log_min
                     
                     # Step 2: Reverse log transform
                     epsilon = params.get('epsilon', 1e-8)
                     data_shift = params.get('data_shift', 0)
                     
                     pred = np.exp(pred_log) - epsilon + data_shift
-                    true = np.exp(true_log) - epsilon + data_shift
+                    if not self.true_data_is_raw and true_log is not None:
+                        true = np.exp(true_log) - epsilon + data_shift
                 else:
-                    # Standard min-max denormalization
+                    # Standard min-max denormalization (global)
                     field_min = params['min']
                     field_max = params['max']
                     pred = pred * (field_max - field_min) + field_min
-                    true = true * (field_max - field_min) + field_min
+                    if not self.true_data_is_raw:
+                        true = true * (field_max - field_min) + field_min
         
         # Apply inactive cell masking if dashboard is provided
         dashboard_ref = dashboard or getattr(self, 'dashboard_ref', None)
@@ -304,7 +370,7 @@ class ModelEvaluationMetrics:
         
         return metrics
     
-    def get_timeseries_metrics(self, case_idx, obs_idx, norm_params=None):
+    def get_timeseries_metrics(self, case_idx, obs_idx, norm_params=None, yobs_pred_override=None):
         """
         Get metrics for timeseries prediction at specific case and observation variable
         
@@ -312,66 +378,66 @@ class ModelEvaluationMetrics:
             case_idx: Case index
             obs_idx: Observation variable index
             norm_params: Normalization parameters for denormalization (optional)
+            yobs_pred_override: Optional override for prediction data (e.g., latent-based predictions)
+                               If provided, shape should be (num_case, num_tstep, n_obs)
             
         Returns:
             Dictionary with metrics
         """
+        # Determine which prediction source to use
+        use_override = yobs_pred_override is not None
+        
         # Check if metrics already computed and cached
         cache_key = f"{case_idx}_{obs_idx}"
+        if use_override:
+            cache_key = f"{case_idx}_{obs_idx}_override"
         if cache_key in self.timeseries_metrics_cache:
             return self.timeseries_metrics_cache[cache_key]
         
         # Extract true and predicted data
-        pred = self.yobs_pred[case_idx, :, obs_idx].cpu().detach().numpy()
+        if use_override:
+            pred = yobs_pred_override[case_idx, :, obs_idx].cpu().detach().numpy()
+        else:
+            pred = self.yobs_pred[case_idx, :, obs_idx].cpu().detach().numpy()
         true = self.yobs_true[case_idx, obs_idx, :].cpu().numpy()
         
         # Denormalize if normalization parameters provided
         if norm_params:
-            if obs_idx < 3:  # BHP data
-                if 'BHP' in norm_params:
-                    params = norm_params['BHP']
-                    if params.get('type') == 'none':
-                        pass  # No normalization was applied, use data as-is
-                    elif params.get('type') == 'log':
-                        # Reverse log normalization
-                        log_min = params['log_min']
-                        log_max = params['log_max']
-                        pred_log = pred * (log_max - log_min) + log_min
-                        true_log = true * (log_max - log_min) + log_min
-                        epsilon = params.get('epsilon', 1e-8)
-                        data_shift = params.get('data_shift', 0)
-                        pred = np.exp(pred_log) - epsilon + data_shift
-                        true = np.exp(true_log) - epsilon + data_shift
-                    else:
-                        # Standard min-max denormalization
-                        obs_min = params['min']
-                        obs_max = params['max']
-                        pred = pred * (obs_max - obs_min) + obs_min
-                        true = true * (obs_max - obs_min) + obs_min
-            elif obs_idx < 6:  # Energy production (indices 3-5)
-                if 'ENERGYRATE' in norm_params:
-                    params = norm_params['ENERGYRATE']
-                    if params.get('type') == 'none':
-                        pass  # No normalization was applied, use data as-is
-                    elif params.get('type') == 'log':
-                        # Reverse log normalization
-                        log_min = params['log_min']
-                        log_max = params['log_max']
-                        pred_log = pred * (log_max - log_min) + log_min
-                        true_log = true * (log_max - log_min) + log_min
-                        epsilon = params.get('epsilon', 1e-8)
-                        data_shift = params.get('data_shift', 0)
-                        pred = np.exp(pred_log) - epsilon + data_shift
-                        true = np.exp(true_log) - epsilon + data_shift
-                    else:
-                        # Standard min-max denormalization
-                        obs_min = params['min'] 
-                        obs_max = params['max']
-                        pred = pred * (obs_max - obs_min) + obs_min
-                        true = true * (obs_max - obs_min) + obs_min
-            else:  # Water production (indices 6-8)
-                if 'WATRATRC' in norm_params:
-                    params = norm_params['WATRATRC']
+            # Get variable name from observation index using config-based mapping
+            var_name = self.obs_variable_map.get(obs_idx, None)
+            
+            if var_name is None:
+                # Fallback to old hard-coded logic if mapping not available
+                # Fallback to hard-coded logic if mapping not available
+                # Note: Observation indices are defined in config.yaml data.observations.variables
+                if obs_idx < 3:  # Default BHP data
+                    var_name = 'BHP'
+                elif obs_idx < 6:  # Default energy production
+                    var_name = 'ENERGYRATE'
+                else:  # Default water production
+                    var_name = 'WATRATRC'
+            
+            # Denormalize using variable name from config
+            if var_name in norm_params:
+                params = norm_params[var_name]
+                if params.get('type') == 'none':
+                    pass  # No normalization was applied, use data as-is
+                elif params.get('type') == 'log':
+                    # Reverse log normalization
+                    log_min = params['log_min']
+                    log_max = params['log_max']
+                    pred_log = pred * (log_max - log_min) + log_min
+                    true_log = true * (log_max - log_min) + log_min
+                    epsilon = params.get('epsilon', 1e-8)
+                    data_shift = params.get('data_shift', 0)
+                    pred = np.exp(pred_log) - epsilon + data_shift
+                    true = np.exp(true_log) - epsilon + data_shift
+                else:
+                    # Standard min-max denormalization
+                    obs_min = params['min'] 
+                    obs_max = params['max']
+                    pred = pred * (obs_max - obs_min) + obs_min
+                    true = true * (obs_max - obs_min) + obs_min
                     if params.get('type') == 'none':
                         pass  # No normalization was applied, use data as-is
                     elif params.get('type') == 'log':
@@ -499,34 +565,71 @@ class ModelEvaluationMetrics:
         true = self.state_true[case_idx, field_idx, timestep_idx, :, :, layer_idx].cpu().numpy()
         
         # Denormalize if normalization parameters provided
+        # CRITICAL: Use channel_names[field_idx] to get correct field_key for normalization lookup
         if norm_params and field_idx < len(self.channel_names):
-            field_key = self.channel_names[field_idx]
+            channel_name = self.channel_names[field_idx]
+            field_key = channel_name.upper()  # Normalize to uppercase for lookup
+            
+            # Try alternative keys if exact match not found
+            if field_key not in norm_params:
+                alternative_keys = []
+                if field_key == 'PERMI':
+                    alternative_keys = ['PERM', 'PERMEABILITY']
+                elif field_key == 'PERM':
+                    alternative_keys = ['PERMI', 'PERMEABILITY']
+                elif field_key == 'VPOROSGEO':
+                    alternative_keys = ['VPOROSTGEO', 'VPOROS', 'POROSITY']
+                elif field_key == 'VPOROSTGEO':
+                    alternative_keys = ['VPOROSGEO', 'VPOROS', 'POROSITY']
+                elif field_key == 'TEMP':
+                    alternative_keys = ['TEMPERATURE']
+                elif field_key == 'TEMPERATURE':
+                    alternative_keys = ['TEMP']
+                
+                for alt_key in alternative_keys:
+                    if alt_key in norm_params:
+                        field_key = alt_key
+                        break
+            
             if field_key in norm_params:
                 params = norm_params[field_key]
-                if params.get('type') == 'none':
+                
+                # Check if per-layer normalization was used
+                if params.get('per_layer', False):
+                    # Use denormalize_data function with layer_idx for per-layer denormalization
+                    from data_preprocessing.normalization import denormalize_data
+                    pred = denormalize_data(pred, params, layer_idx=layer_idx)
+                    if not self.true_data_is_raw:
+                        true = denormalize_data(true, params, layer_idx=layer_idx)
+                elif params.get('type') == 'none':
                     # Data was not normalized, use as-is
                     pass
                 elif params.get('type') == 'log':
-                    # Reverse log normalization
+                    # Reverse log normalization (global)
                     log_min = params['log_min']
                     log_max = params['log_max']
                     
                     # Step 1: Reverse min-max scaling of log data
                     pred_log = pred * (log_max - log_min) + log_min
-                    true_log = true * (log_max - log_min) + log_min
+                    if self.true_data_is_raw:
+                        true_log = None
+                    else:
+                        true_log = true * (log_max - log_min) + log_min
                     
                     # Step 2: Reverse log transform
                     epsilon = params.get('epsilon', 1e-8)
                     data_shift = params.get('data_shift', 0)
                     
                     pred = np.exp(pred_log) - epsilon + data_shift
-                    true = np.exp(true_log) - epsilon + data_shift
+                    if not self.true_data_is_raw and true_log is not None:
+                        true = np.exp(true_log) - epsilon + data_shift
                 else:
-                    # Standard min-max denormalization
+                    # Standard min-max denormalization (global)
                     field_min = params['min']
                     field_max = params['max']
                     pred = pred * (field_max - field_min) + field_min
-                    true = true * (field_max - field_min) + field_min
+                    if not self.true_data_is_raw:
+                        true = true * (field_max - field_min) + field_min
         
         # Create plot
         if ax is None:
@@ -634,7 +737,7 @@ class ModelEvaluationMetrics:
         
         return ax
     
-    def plot_timeseries_metrics(self, case_idx, obs_idx, ax=None, norm_params=None):
+    def plot_timeseries_metrics(self, case_idx, obs_idx, ax=None, norm_params=None, yobs_pred_override=None):
         """
         Plot metrics for timeseries prediction as actual vs predicted scatter plot
         
@@ -643,40 +746,55 @@ class ModelEvaluationMetrics:
             obs_idx: Observation variable index
             ax: Matplotlib axis (optional)
             norm_params: Normalization parameters for denormalization (optional)
+            yobs_pred_override: Optional override for prediction data (e.g., latent-based predictions)
+                               If provided, shape should be (num_case, num_tstep, n_obs)
             
         Returns:
             Matplotlib axis
         """
-        # Get data and metrics
-        metrics = self.get_timeseries_metrics(case_idx, obs_idx, norm_params)
+        # Get data and metrics (pass override to metrics calculation)
+        metrics = self.get_timeseries_metrics(case_idx, obs_idx, norm_params, yobs_pred_override=yobs_pred_override)
         
         # Extract true and predicted data
-        pred = self.yobs_pred[case_idx, :, obs_idx].cpu().detach().numpy()
+        if yobs_pred_override is not None:
+            pred = yobs_pred_override[case_idx, :, obs_idx].cpu().detach().numpy()
+        else:
+            pred = self.yobs_pred[case_idx, :, obs_idx].cpu().detach().numpy()
         true = self.yobs_true[case_idx, obs_idx, :].cpu().numpy()
         
         # Denormalize if normalization parameters provided
         if norm_params:
-            if obs_idx < 3:  # BHP data
-                if 'BHP' in norm_params:
-                    params = norm_params['BHP']
-                    if params.get('type') != 'none':  # Only denormalize if not 'none'
-                        obs_min = params['min']
-                        obs_max = params['max']
-                        pred = pred * (obs_max - obs_min) + obs_min
-                        true = true * (obs_max - obs_min) + obs_min
-            elif obs_idx < 6:  # Energy production (indices 3-5)
-                if 'ENERGYRATE' in norm_params:
-                    params = norm_params['ENERGYRATE']
-                    if params.get('type') != 'none':  # Only denormalize if not 'none'
+            # Get variable name from observation index using config-based mapping
+            var_name = self.obs_variable_map.get(obs_idx, None)
+            
+            if var_name is None:
+                # Fallback to old hard-coded logic if mapping not available
+                # Fallback to hard-coded logic if mapping not available
+                # Note: Observation indices are defined in config.yaml data.observations.variables
+                if obs_idx < 3:  # Default BHP data
+                    var_name = 'BHP'
+                elif obs_idx < 6:  # Default energy production
+                    var_name = 'ENERGYRATE'
+                else:  # Default water production
+                    var_name = 'WATRATRC'
+            
+            # Denormalize using variable name from config
+            if var_name in norm_params:
+                params = norm_params[var_name]
+                if params.get('type') != 'none':  # Only denormalize if not 'none'
+                    if params.get('type') == 'log':
+                        # Reverse log normalization
+                        log_min = params['log_min']
+                        log_max = params['log_max']
+                        pred_log = pred * (log_max - log_min) + log_min
+                        true_log = true * (log_max - log_min) + log_min
+                        epsilon = params.get('epsilon', 1e-8)
+                        data_shift = params.get('data_shift', 0)
+                        pred = np.exp(pred_log) - epsilon + data_shift
+                        true = np.exp(true_log) - epsilon + data_shift
+                    else:
+                        # Standard min-max denormalization
                         obs_min = params['min'] 
-                        obs_max = params['max']
-                        pred = pred * (obs_max - obs_min) + obs_min
-                        true = true * (obs_max - obs_min) + obs_min
-            else:  # Water production (indices 6-8)
-                if 'WATRATRC' in norm_params:
-                    params = norm_params['WATRATRC']
-                    if params.get('type') != 'none':  # Only denormalize if not 'none'
-                        obs_min = params['min']
                         obs_max = params['max']
                         pred = pred * (obs_max - obs_min) + obs_min
                         true = true * (obs_max - obs_min) + obs_min

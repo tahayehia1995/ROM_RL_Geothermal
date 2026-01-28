@@ -21,7 +21,7 @@ def create_visualization_dashboard(state_pred, state_seq_true_aligned, yobs_pred
                                  my_rom=None, test_controls=None, test_observations=None, device=None,
                                  train_state_pred=None, train_state_seq_true_aligned=None, 
                                  train_yobs_pred=None, train_yobs_seq_true=None, train_case_indices=None,
-                                 loaded_data=None):
+                                 loaded_data=None, true_data_is_raw=False):
     """
     Convenience function to create and display the interactive visualization dashboard
     
@@ -57,7 +57,7 @@ def create_visualization_dashboard(state_pred, state_seq_true_aligned, yobs_pred
     # Initialize evaluation metrics
     metrics_evaluator = ModelEvaluationMetrics(
         state_pred, state_seq_true_aligned, yobs_pred, yobs_seq_true, 
-        channel_names=channel_names
+        channel_names=channel_names, true_data_is_raw=true_data_is_raw
     )
     
     # Create and display the dashboard
@@ -66,7 +66,7 @@ def create_visualization_dashboard(state_pred, state_seq_true_aligned, yobs_pred
         test_case_indices, norm_params, Nx, Ny, Nz, num_tstep, channel_names,
         my_rom, test_controls, test_observations, device,
         train_state_pred, train_state_seq_true_aligned, train_yobs_pred, train_yobs_seq_true, train_case_indices,
-        loaded_data
+        loaded_data, true_data_is_raw=true_data_is_raw
     )
     
     dashboard.display_dashboard()

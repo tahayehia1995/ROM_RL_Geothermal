@@ -87,6 +87,9 @@ class ScientificVisualization:
         if self.norm_params is None:
             print("⚠️ Could not load preprocessing normalization parameters for visualization.")
         
+        # Load observation and control variable definitions from ROM config for consistency
+        self._load_observation_control_definitions()")
+        
         # Publication-quality plot settings
         plt.style.use('default')
         plt.rcParams.update({
@@ -118,18 +121,111 @@ class ScientificVisualization:
         first_action = self.data['actions'][0]
         
         if isinstance(first_action, dict):
+            # Use config-based variable names if available, otherwise fallback to hard-coded patterns
             for key in first_action.keys():
-                if 'BHP_psi' in key:
-                    # Extract well name (e.g., "P1_BHP_psi" -> "P1")
+                # Check for BHP (could be producer or injector based on config)
+                if '_BHP_' in key or key.endswith('_BHP_psi'):
                     well_name = key.split('_')[0]
-                    wells[well_name] = {'type': 'Producer', 'actions': ['BHP'], 'observations': ['Water', 'Gas']}
-                elif 'Gas_ft3day' in key:
-                    # Extract well name (e.g., "I1_Gas_ft3day" -> "I1")
+                    # Determine well type from config or fallback logic
+                    if well_name.startswith('P'):
+                        wells[well_name] = {'type': 'Producer', 'actions': ['BHP'], 'observations': ['Water', 'Gas']}
+                    elif well_name.startswith('I'):
+                        wells[well_name] = {'type': 'Injector', 'actions': ['BHP'], 'observations': ['BHP']}
+                # Check for Energy/Gas injection (typically injectors)
+                elif '_Gas_' in key or '_Energy_' in key or 'ft3day' in key:
                     well_name = key.split('_')[0]
                     if well_name not in wells:  # Don't overwrite if already added
-                        wells[well_name] = {'type': 'Injector', 'actions': ['Gas'], 'observations': ['BHP']}
+                        if well_name.startswith('I'):
+                            wells[well_name] = {'type': 'Injector', 'actions': ['Gas'], 'observations': ['BHP']}
+                        elif well_name.startswith('P'):
+                            # Producer energy production (observation)
+                            if well_name not in wells:
+                                wells[well_name] = {'type': 'Producer', 'actions': ['BHP'], 'observations': ['Water', 'Gas']}
         
         return wells
+    
+    def _load_observation_control_definitions(self):
+        """Load observation and control variable definitions from ROM config.yaml for consistency"""
+        self.obs_variable_map = {}  # Maps observation index to variable name
+        self.obs_indices_map = {}  # Maps variable name to observation indices
+        self.obs_units_map = {}  # Maps variable name to display units
+        self.control_variable_map = {}  # Maps control index to variable name
+        self.control_indices_map = {}  # Maps variable name to control indices
+        self.control_units_map = {}  # Maps variable name to display units
+        
+        # Try to load from ROM config.yaml
+        rom_config_path = getattr(self.config, 'rom_config_path', None)
+        if rom_config_path is None:
+            # Try default path
+            rom_config_path = '../ROM_Refactored/config.yaml'
+        
+        try:
+            import yaml
+            import os
+            
+            # Resolve path relative to current file location
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            rom_config_full_path = os.path.normpath(os.path.join(current_dir, '..', '..', 'ROM_Refactored', 'config.yaml'))
+            
+            if os.path.exists(rom_config_full_path):
+                with open(rom_config_full_path, 'r') as f:
+                    rom_config = yaml.safe_load(f)
+                
+                # Load observation definitions
+                obs_config = rom_config.get('data', {}).get('observations', {})
+                if obs_config and 'variables' in obs_config:
+                    obs_vars = obs_config['variables']
+                    obs_order = obs_config.get('order', ['BHP', 'ENERGYRATE', 'WATRATRC'])
+                    
+                    for var_name in obs_order:
+                        if var_name in obs_vars:
+                            var_config = obs_vars[var_name]
+                            indices = var_config.get('indices', [])
+                            unit_display = var_config.get('unit_display', '')
+                            well_names = var_config.get('well_names', [])
+                            well_type = var_config.get('well_type', '')
+                            
+                            self.obs_indices_map[var_name] = indices
+                            self.obs_units_map[var_name] = unit_display
+                            for idx in indices:
+                                self.obs_variable_map[idx] = var_name
+                    
+                    print(f"✅ Loaded observation definitions from ROM config: {len(obs_order)} observation types")
+                
+                # Load control definitions
+                control_config = rom_config.get('data', {}).get('controls', {})
+                if control_config and 'variables' in control_config:
+                    control_vars = control_config['variables']
+                    control_order = control_config.get('order', ['BHP'])
+                    
+                    control_idx = 0
+                    for var_name in control_order:
+                        if var_name in control_vars:
+                            var_config = control_vars[var_name]
+                            num_wells = var_config.get('num_wells', 0)
+                            well_type = var_config.get('well_type', '')
+                            unit_display = var_config.get('unit_display', '')
+                            
+                            if well_type == 'injectors':
+                                indices = list(range(control_idx, control_idx + num_wells))
+                            elif well_type == 'producers':
+                                indices = list(range(control_idx, control_idx + num_wells))
+                            else:
+                                indices = list(range(control_idx, control_idx + num_wells))
+                            
+                            self.control_indices_map[var_name] = indices
+                            self.control_units_map[var_name] = unit_display
+                            for idx in indices:
+                                self.control_variable_map[idx] = var_name
+                            
+                            control_idx += num_wells
+                    
+                    print(f"✅ Loaded control definitions from ROM config: {len(control_order)} control types")
+            else:
+                print(f"⚠️ ROM config file not found at {rom_config_full_path}, using defaults")
+        except Exception as e:
+            print(f"⚠️ Could not load observation/control definitions from ROM config: {e}")
+            print("   Using default hard-coded mappings")
     
     def _check_spatial_data_availability(self):
         """Check if spatial reservoir state data is available for visualization"""
@@ -744,47 +840,73 @@ class ScientificVisualization:
         # Get actions - data is already in physical units (no denormalization needed)
         physical_actions = self._get_denormalized_actions()
         
-        if well_info['type'] == 'Producer':
-            # Plot BHP control in psi (already physical units)
-            bhp_key = f"{well_name}_BHP_psi"
-            bhp_values = [action.get(bhp_key, 0) for action in physical_actions]
+        # Get control variable name and unit from config
+        control_var_name = None
+        control_unit = None
+        if hasattr(self, 'control_units_map') and self.control_units_map:
+            # Try to find control variable for this well type
+            if well_info['type'] == 'Producer':
+                # Producers typically use BHP control
+                for var_name in ['BHP']:
+                    if var_name in self.control_units_map:
+                        control_var_name = var_name
+                        control_unit = self.control_units_map[var_name]
+                        break
+            else:  # Injector
+                # Injectors might use ENERGYRATE or BHP based on config
+                for var_name in ['ENERGYRATE', 'BHP']:
+                    if var_name in self.control_units_map:
+                        control_var_name = var_name
+                        control_unit = self.control_units_map[var_name]
+                        break
+        
+        # Fallback to hard-coded logic if config not available
+        if control_var_name is None:
+            if well_info['type'] == 'Producer':
+                control_var_name = 'BHP'
+                control_unit = 'psi'
+            else:  # Injector
+                control_var_name = 'ENERGYRATE'
+                control_unit = 'BTU/Day'
+        
+        # Build action key based on variable name and unit
+        if control_var_name == 'BHP':
+            action_key = f"{well_name}_BHP_psi"
+            values = [action.get(action_key, 0) for action in physical_actions]
+            label = 'BHP Control'
+            ylabel = f'BHP ({control_unit})'
+            title_suffix = 'BHP Control Profile'
+        elif control_var_name == 'ENERGYRATE':
+            action_key = f"{well_name}_Gas_ft3day"  # Legacy key format
+            values = [action.get(action_key, 0) for action in physical_actions]
+            label = 'Energy Injection'
+            ylabel = f'Energy Injection ({control_unit})'
+            title_suffix = 'Energy Injection Profile'
+        else:
+            # Generic fallback
+            action_key = f"{well_name}_{control_var_name}"
+            values = [action.get(action_key, 0) for action in physical_actions]
+            label = f'{control_var_name} Control'
+            ylabel = f'{control_var_name} ({control_unit})'
+            title_suffix = f'{control_var_name} Control Profile'
+        
+        if any(val > 0 for val in values):
+            ax.plot(time_values, values, 'b-' if control_var_name == 'BHP' else 'g-', 
+                   marker='s' if control_var_name == 'BHP' else 'o', markersize=4,
+                   label=label, linewidth=2)
+            ax.set_ylabel(ylabel, fontsize=14, color='blue' if control_var_name == 'BHP' else 'green')
+            ax.tick_params(axis='y', labelcolor='blue' if control_var_name == 'BHP' else 'green')
             
-            if any(val > 0 for val in bhp_values):
-                ax.plot(time_values, bhp_values, 'b-', marker='s', markersize=4, 
-                       label='BHP Control', linewidth=2)
-                ax.set_ylabel('BHP (psi)', fontsize=14, color='blue')
-                ax.tick_params(axis='y', labelcolor='blue')
-                
-                # Add reasonable range shading based on actual data
-                bhp_min = min(bhp_values) * 0.95 if bhp_values else 0
-                bhp_max = max(bhp_values) * 1.05 if bhp_values else 1000
-                ax.axhspan(bhp_min, bhp_max, alpha=0.1, color='blue', label='BHP Range')
-                ax.set_title(f'{well_name} - BHP Control Profile (Physical Units)', fontsize=16, fontweight='bold')
-            else:
-                ax.text(0.5, 0.5, 'No BHP action data available', 
-                       transform=ax.transAxes, ha='center', va='center', fontsize=14)
-                ax.set_title(f'{well_name} - BHP Control Profile (No Data)', fontsize=16, fontweight='bold')
-            
-        else:  # Injector
-            # Plot energy injection rate in BTU/Day (already physical units)
-            gas_key = f"{well_name}_Gas_ft3day"
-            gas_values = [action.get(gas_key, 0) for action in physical_actions]
-            
-            if any(val > 0 for val in gas_values):
-                ax.plot(time_values, gas_values, 'g-', marker='o', markersize=4,
-                       label='Energy Injection', linewidth=2)
-                ax.set_ylabel('Energy Injection (BTU/Day)', fontsize=14, color='green')
-                ax.tick_params(axis='y', labelcolor='green')
-                
-                # Add reasonable range shading
-                gas_min = min(gas_values) * 0.95 if gas_values else 0
-                gas_max = max(gas_values) * 1.05 if gas_values else 10000000
-                ax.axhspan(gas_min, gas_max, alpha=0.1, color='green', label='Energy Injection Range')
-                ax.set_title(f'{well_name} - Energy Injection Profile (Physical Units)', fontsize=16, fontweight='bold')
-            else:
-                ax.text(0.5, 0.5, 'No energy injection data available',
-                       transform=ax.transAxes, ha='center', va='center', fontsize=14)
-                ax.set_title(f'{well_name} - Energy Injection Profile (No Data)', fontsize=16, fontweight='bold')
+            # Add reasonable range shading
+            val_min = min(values) * 0.95 if values else 0
+            val_max = max(values) * 1.05 if values else (1000 if control_var_name == 'BHP' else 10000000)
+            ax.axhspan(val_min, val_max, alpha=0.1, color='blue' if control_var_name == 'BHP' else 'green', 
+                      label=f'{label} Range')
+            ax.set_title(f'{well_name} - {title_suffix} (Physical Units)', fontsize=16, fontweight='bold')
+        else:
+            ax.text(0.5, 0.5, f'No {label.lower()} data available', 
+                   transform=ax.transAxes, ha='center', va='center', fontsize=14)
+            ax.set_title(f'{well_name} - {title_suffix} (No Data)', fontsize=16, fontweight='bold')
         
         ax.set_xlabel(time_label, fontsize=14)
         ax.legend(fontsize=11)
@@ -796,28 +918,64 @@ class ScientificVisualization:
         # Get observations - data is already in physical units (no denormalization needed)
         physical_observations = self._get_denormalized_observations()
         
-        if well_info['type'] == 'Producer':
-            # Plot water and gas production with dual y-axes
-            water_key = f"{well_name}_Water_bblday"
-            gas_key = f"{well_name}_Gas_ft3day"
+        # Get observation variable names and units from config
+        obs_vars = []
+        obs_units = []
+        obs_keys = []
+        
+        if hasattr(self, 'obs_units_map') and self.obs_units_map:
+            # Use config-based observation variables
+            if well_info['type'] == 'Producer':
+                # Producers typically observe ENERGYRATE and WATRATRC
+                for var_name in ['ENERGYRATE', 'WATRATRC']:
+                    if var_name in self.obs_units_map:
+                        obs_vars.append(var_name)
+                        obs_units.append(self.obs_units_map[var_name])
+                        # Build key based on variable name and well name
+                        if var_name == 'WATRATRC':
+                            obs_keys.append(f"{well_name}_Water_bblday")  # Legacy format
+                        elif var_name == 'ENERGYRATE':
+                            obs_keys.append(f"{well_name}_Gas_ft3day")  # Legacy format
+            else:  # Injector
+                # Injectors typically observe BHP
+                if 'BHP' in self.obs_units_map:
+                    obs_vars.append('BHP')
+                    obs_units.append(self.obs_units_map['BHP'])
+                    obs_keys.append(f"{well_name}_BHP_psi")  # Legacy format
+        else:
+            # Fallback to hard-coded logic
+            if well_info['type'] == 'Producer':
+                obs_vars = ['WATRATRC', 'ENERGYRATE']
+                obs_units = ['bbl/day', 'BTU/Day']
+                obs_keys = [f"{well_name}_Water_bblday", f"{well_name}_Gas_ft3day"]
+            else:  # Injector
+                obs_vars = ['BHP']
+                obs_units = ['psi']
+                obs_keys = [f"{well_name}_BHP_psi"]
+        
+        if well_info['type'] == 'Producer' and len(obs_vars) >= 2:
+            # Plot water and energy production with dual y-axes
+            water_key = obs_keys[0] if len(obs_keys) > 0 else f"{well_name}_Water_bblday"
+            energy_key = obs_keys[1] if len(obs_keys) > 1 else f"{well_name}_Gas_ft3day"
             
             water_values = [obs.get(water_key, 0) for obs in physical_observations]
-            gas_values = [obs.get(gas_key, 0) for obs in physical_observations]
+            energy_values = [obs.get(energy_key, 0) for obs in physical_observations]
             
-            if any(val > 0 for val in water_values) or any(val > 0 for val in gas_values):
+            if any(val > 0 for val in water_values) or any(val > 0 for val in energy_values):
                 # Water production on left axis
                 ax1 = ax
                 line1 = ax1.plot(time_values, water_values, 'b-', marker='^', markersize=4,
                                 label='Water Production', linewidth=2)
                 ax1.set_xlabel(time_label, fontsize=14)
-                ax1.set_ylabel('Water Production (bbl/day)', fontsize=14, color='blue')
+                ax1.set_ylabel(f'Water Production ({obs_units[0]})', fontsize=14, color='blue')
                 ax1.tick_params(axis='y', labelcolor='blue')
                 
                 # Energy production on right axis
                 ax2 = ax1.twinx()
-                line2 = ax2.plot(time_values, gas_values, 'r-', marker='o', markersize=4,
+                line2 = ax2.plot(time_values, energy_values, 'r-', marker='o', markersize=4,
                                 label='Energy Production', linewidth=2)
-                ax2.set_ylabel('Energy Production (BTU/Day)', fontsize=14, color='red')
+                ax2.set_ylabel(f'Energy Production ({obs_units[1] if len(obs_units) > 1 else "BTU/Day"})', 
+                              fontsize=14, color='red')
                 ax2.tick_params(axis='y', labelcolor='red')
                 
                 # Combine legends
@@ -832,21 +990,25 @@ class ScientificVisualization:
                        transform=ax.transAxes, ha='center', va='center', fontsize=14)
                 ax.set_title(f'{well_name} - Production Profile (No Data)', fontsize=16, fontweight='bold')
         
-        else:  # Injector
-            # Plot BHP observation
-            bhp_key = f"{well_name}_BHP_psi"
-            bhp_values = [obs.get(bhp_key, 0) for obs in physical_observations]
+        else:  # Injector or single observation
+            obs_key = obs_keys[0] if len(obs_keys) > 0 else f"{well_name}_BHP_psi"
+            obs_unit = obs_units[0] if len(obs_units) > 0 else 'psi'
+            obs_var = obs_vars[0] if len(obs_vars) > 0 else 'BHP'
             
-            if any(val > 0 for val in bhp_values):
-                ax.plot(time_values, bhp_values, 'purple', marker='s', markersize=4,
-                       label='BHP Observation', linewidth=2)
-                ax.set_ylabel('BHP (psi)', fontsize=14, color='purple')
+            obs_values = [obs.get(obs_key, 0) for obs in physical_observations]
+            
+            if any(val > 0 for val in obs_values):
+                ax.plot(time_values, obs_values, 'purple', marker='s', markersize=4,
+                       label=f'{obs_var} Observation', linewidth=2)
+                ax.set_ylabel(f'{obs_var} ({obs_unit})', fontsize=14, color='purple')
                 ax.tick_params(axis='y', labelcolor='purple')
-                ax.set_title(f'{well_name} - BHP Observation Profile (Physical Units)', fontsize=16, fontweight='bold')
+                ax.set_title(f'{well_name} - {obs_var} Observation Profile (Physical Units)', 
+                           fontsize=16, fontweight='bold')
             else:
-                ax.text(0.5, 0.5, 'No BHP observation data available',
+                ax.text(0.5, 0.5, f'No {obs_var.lower()} observation data available',
                        transform=ax.transAxes, ha='center', va='center', fontsize=14)
-                ax.set_title(f'{well_name} - BHP Observation Profile (No Data)', fontsize=16, fontweight='bold')
+                ax.set_title(f'{well_name} - {obs_var} Observation Profile (No Data)', 
+                           fontsize=16, fontweight='bold')
             
             ax.set_xlabel(time_label, fontsize=14)
             ax.legend(fontsize=11)
@@ -860,33 +1022,53 @@ class ScientificVisualization:
         print(f"\n📊 {well_name} ({well_info['type']}) Summary:")
         print("=" * 60)
         
+        # Get variable names and units from config
+        control_unit = 'psi'  # Default
+        obs_units = {}  # Map variable name to unit
+        
+        if hasattr(self, 'control_units_map') and self.control_units_map:
+            if 'BHP' in self.control_units_map:
+                control_unit = self.control_units_map['BHP']
+            elif 'ENERGYRATE' in self.control_units_map:
+                control_unit = self.control_units_map['ENERGYRATE']
+        
+        if hasattr(self, 'obs_units_map') and self.obs_units_map:
+            obs_units = self.obs_units_map.copy()
+        
         if well_info['type'] == 'Producer':
+            # Use config-based keys with fallback
             bhp_key = f"{well_name}_BHP_psi"
             water_key = f"{well_name}_Water_bblday"
-            gas_key = f"{well_name}_Gas_ft3day"
+            energy_key = f"{well_name}_Gas_ft3day"
             
             bhp_values = [action.get(bhp_key, 0) for action in physical_actions]
             water_values = [obs.get(water_key, 0) for obs in physical_observations]
-            gas_values = [obs.get(gas_key, 0) for obs in physical_observations]
+            energy_values = [obs.get(energy_key, 0) for obs in physical_observations]
+            
+            water_unit = obs_units.get('WATRATRC', 'bbl/day')
+            energy_unit = obs_units.get('ENERGYRATE', 'BTU/Day')
             
             if bhp_values:
-                print(f"BHP Control: Min={min(bhp_values):.1f}, Max={max(bhp_values):.1f}, Mean={np.mean(bhp_values):.1f} psi")
+                print(f"BHP Control: Min={min(bhp_values):.1f}, Max={max(bhp_values):.1f}, Mean={np.mean(bhp_values):.1f} {control_unit}")
             if water_values:
-                print(f"Water Production: Min={min(water_values):.1f}, Max={max(water_values):.1f}, Mean={np.mean(water_values):.1f} bbl/day")
-            if gas_values:
-                print(f"Energy Production: Min={min(gas_values):.1f}, Max={max(gas_values):.1f}, Mean={np.mean(gas_values):.1f} BTU/Day")
+                print(f"Water Production: Min={min(water_values):.1f}, Max={max(water_values):.1f}, Mean={np.mean(water_values):.1f} {water_unit}")
+            if energy_values:
+                print(f"Energy Production: Min={min(energy_values):.1f}, Max={max(energy_values):.1f}, Mean={np.mean(energy_values):.1f} {energy_unit}")
         
         else:  # Injector
-            gas_key = f"{well_name}_Gas_ft3day"
+            energy_key = f"{well_name}_Gas_ft3day"
             bhp_key = f"{well_name}_BHP_psi"
             
-            gas_values = [action.get(gas_key, 0) for action in physical_actions]
+            energy_values = [action.get(energy_key, 0) for action in physical_actions]
             bhp_values = [obs.get(bhp_key, 0) for obs in physical_observations]
             
-            if gas_values:
-                print(f"Energy Injection: Min={min(gas_values):.1f}, Max={max(gas_values):.1f}, Mean={np.mean(gas_values):.1f} BTU/Day")
+            energy_unit = self.control_units_map.get('ENERGYRATE', 'BTU/Day') if hasattr(self, 'control_units_map') else 'BTU/Day'
+            bhp_unit = obs_units.get('BHP', 'psi')
+            
+            if energy_values:
+                print(f"Energy Injection: Min={min(energy_values):.1f}, Max={max(energy_values):.1f}, Mean={np.mean(energy_values):.1f} {energy_unit}")
             if bhp_values:
-                print(f"BHP Observation: Min={min(bhp_values):.1f}, Max={max(bhp_values):.1f}, Mean={np.mean(bhp_values):.1f} psi")
+                print(f"BHP Observation: Min={min(bhp_values):.1f}, Max={max(bhp_values):.1f}, Mean={np.mean(bhp_values):.1f} {bhp_unit}")
         
         print("=" * 60)
     

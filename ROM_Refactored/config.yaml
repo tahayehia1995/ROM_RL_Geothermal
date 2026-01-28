@@ -8,12 +8,12 @@ data_preprocessing:
     train_split_ratio: 0.75
     random_seed: 42
   normalization: &id002
-    default_spatial_normalization: minmax
+    default_spatial_normalization: log
     default_timeseries_normalization: minmax
     spatial_datasets:
-      PRES: minmax
+      PRES: log
       PERMI: log
-      TEMP: minmax
+      TEMP: log
       VPOROSTGEO: minmax
     timeseries_datasets:
       BHP: minmax
@@ -34,7 +34,7 @@ data_preprocessing:
     verbose: true
     show_progress: true
 model:
-  latent_dim: 32
+  latent_dim: 128
   u_dim: 6
   n_channels: 4
   method: E2C
@@ -74,6 +74,81 @@ data:
       - 18
       - 11
       - 24
+  observations:
+    variables:
+      BHP:
+        name: BHP
+        display_name: Bottom-Hole Pressure
+        unit: Pa
+        unit_display: psi
+        unit_conversion: 6894.76
+        indices:
+        - 0
+        - 1
+        - 2
+        well_type: injectors
+        num_wells: 3
+        well_names:
+        - Inj1
+        - Inj2
+        - Inj3
+        group_name: BHP (All Injectors)
+      ENERGYRATE:
+        name: ENERGYRATE
+        display_name: Energy Production Rate
+        unit: W
+        unit_display: BTU/Day
+        unit_conversion: 0.000293071
+        indices:
+        - 3
+        - 4
+        - 5
+        well_type: producers
+        num_wells: 3
+        well_names:
+        - Prod1
+        - Prod2
+        - Prod3
+        group_name: Energy Production (All Producers)
+      WATRATRC:
+        name: WATRATRC
+        display_name: Water Production Rate
+        unit: kg/s
+        unit_display: bbl/day
+        unit_conversion: 0.00838641
+        indices:
+        - 6
+        - 7
+        - 8
+        well_type: producers
+        num_wells: 3
+        well_names:
+        - Prod1
+        - Prod2
+        - Prod3
+        group_name: Water Production (All Producers)
+    order:
+    - BHP
+    - ENERGYRATE
+    - WATRATRC
+    num_observations: 9
+  controls:
+    variables:
+      BHP:
+        name: BHP
+        display_name: Bottom-Hole Pressure
+        unit: Pa
+        unit_display: psi
+        unit_conversion: 6894.76
+        well_type: injectors
+        num_wells: 3
+        well_names:
+        - Inj1
+        - Inj2
+        - Inj3
+    order:
+    - BHP
+    num_controls: 6
 encoder:
   conv_layers:
     conv1:
@@ -202,43 +277,16 @@ decoder:
 transition:
   type: linear
   encoder_hidden_dims:
-  - 200
-  - 200
-  - 200
-  fno:
-    width: 32
-    modes_x: 12
-    modes_y: 6
-    modes_z: 6
-    n_layers: 3
-    control_injection: well_specific_spatial
-    well_specific_spatial:
-      influence_radius: 3.0
-      influence_function: gaussian
-      influence_strength: 1.0
-      use_3d_influence: true
-      z_penetration_mode: full
-      normalization: max_normalize
-      per_well_scaling: true
-      injector_scaling: 1.2
-      producer_scaling: 0.8
-      temporal_weighting: true
-      model_interference: false
-      interference_threshold: 5.0
-  hybrid_fno:
-    fno_weight: 0.7
-    linear_weight: 0.3
-    use_learned_blending: false
-    forward_mode: fno_only
-    predict_mode: fno_only
+  - 400
+  - 400
 training:
-  epoch: 200
-  batch_size: 8
-  learning_rate: 0.0001
+  epoch: 300
+  batch_size: 128
+  learning_rate: 1.0e-05
   nsteps: 2
   num_tsteps: 30
 learning_rate_scheduler:
-  enable: true
+  enable: false
   type: step_decay
   reduce_on_plateau:
     mode: min
@@ -298,21 +346,21 @@ loss:
   lambda_reconstruction_loss: 1.0
   enable_per_element_normalization: true
   enable_per_channel_loss: true
-  reconstruction_variance: 1.0
+  reconstruction_variance: 0.5
   channel_weights:
-  - 50.0
   - 1.0
-  - 50.0
-  - 1
+  - 1.0
+  - 1.0
+  - 1.0
   lambda_flux_loss: 0.001
   lambda_bhp_loss: 20.0
   lambda_trans_loss: 1.0
   lambda_yobs_loss: 1.0
   channel_mapping:
-    pressure: 0
-    perm_x: 1
+    PRES: 0
+    PERMI: 1
     TEMP: 2
-    VPOROSTGEO: 3
+    VPOROSGEO: 3
 dynamic_loss_weighting:
   enable: false
   method: gradnorm
@@ -395,7 +443,7 @@ discriminator:
     dropout: 0.3
   learning_rate: 0.0002
   update_ratio: 1
-  label_smoothing: 0.1
+  label_smoothing: 0.5
 testing:
   num_tsteps: 30
   test_batch_size: 16
@@ -451,7 +499,7 @@ runtime:
     config_file: config.yaml
 experiment:
   seed: 42
-  gradient_clip: 0.0
+  gradient_clip: 2.0
   early_stopping_patience: 50
 data_preprocessing_processing: *id001
 data_preprocessing_normalization: *id002

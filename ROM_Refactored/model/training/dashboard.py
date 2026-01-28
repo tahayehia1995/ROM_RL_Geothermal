@@ -326,14 +326,15 @@ class TrainingDashboard:
         )
         widgets_list.append(self.u_dim_input)
         
-        # Transition type
-        transition_options = ['linear', 'fno', 'hybrid_fno']
+        # Transition type (only linear supported, FNO removed)
+        transition_options = ['linear']
         self.transition_type_input = widgets.Dropdown(
             options=transition_options,
-            value=self.config.transition.get('type', 'linear') if self.config else 'linear',
+            value='linear',
             description="Transition Type:",
             style={'description_width': '200px'},
-            layout=widgets.Layout(width='600px')
+            layout=widgets.Layout(width='600px'),
+            disabled=True  # Only linear is supported
         )
         widgets_list.append(self.transition_type_input)
         
@@ -497,62 +498,7 @@ class TrainingDashboard:
         )
         widgets_list.append(self.transition_encoder_hidden_dims_input)
         
-        # FNO settings (conditional on transition type)
-        fno_config = self.config.transition.get('fno', {}) if self.config else {}
-        self.transition_fno_width_input = widgets.IntSlider(
-            value=fno_config.get('width', 64),
-            min=32,
-            max=128,
-            step=16,
-            description="FNO Width:",
-            style={'description_width': '200px'},
-            layout=widgets.Layout(width='600px')
-        )
-        widgets_list.append(self.transition_fno_width_input)
-        
-        self.transition_fno_modes_x_input = widgets.IntSlider(
-            value=fno_config.get('modes_x', 8),
-            min=1,
-            max=20,
-            step=1,
-            description="FNO Modes X:",
-            style={'description_width': '200px'},
-            layout=widgets.Layout(width='600px')
-        )
-        widgets_list.append(self.transition_fno_modes_x_input)
-        
-        self.transition_fno_modes_y_input = widgets.IntSlider(
-            value=fno_config.get('modes_y', 8),
-            min=1,
-            max=20,
-            step=1,
-            description="FNO Modes Y:",
-            style={'description_width': '200px'},
-            layout=widgets.Layout(width='600px')
-        )
-        widgets_list.append(self.transition_fno_modes_y_input)
-        
-        self.transition_fno_modes_z_input = widgets.IntSlider(
-            value=fno_config.get('modes_z', 4),
-            min=1,
-            max=20,
-            step=1,
-            description="FNO Modes Z:",
-            style={'description_width': '200px'},
-            layout=widgets.Layout(width='600px')
-        )
-        widgets_list.append(self.transition_fno_modes_z_input)
-        
-        self.transition_fno_n_layers_input = widgets.IntSlider(
-            value=fno_config.get('n_layers', 4),
-            min=2,
-            max=6,
-            step=1,
-            description="FNO N Layers:",
-            style={'description_width': '200px'},
-            layout=widgets.Layout(width='600px')
-        )
-        widgets_list.append(self.transition_fno_n_layers_input)
+        # FNO settings removed - only linear transition supported
         
         return widgets.VBox(widgets_list)
     
@@ -1340,12 +1286,7 @@ class TrainingDashboard:
             # Transition architecture
             encoder_hidden_dims = self.config.transition.get('encoder_hidden_dims', [200, 200])
             self.transition_encoder_hidden_dims_input.value = str(encoder_hidden_dims)
-            fno_config = self.config.transition.get('fno', {})
-            self.transition_fno_width_input.value = fno_config.get('width', 64)
-            self.transition_fno_modes_x_input.value = fno_config.get('modes_x', 8)
-            self.transition_fno_modes_y_input.value = fno_config.get('modes_y', 8)
-            self.transition_fno_modes_z_input.value = fno_config.get('modes_z', 4)
-            self.transition_fno_n_layers_input.value = fno_config.get('n_layers', 4)
+            # FNO settings removed - only linear transition supported
             
             # Loss configuration
             self.lambda_reconstruction_input.value = self.config.loss.get('lambda_reconstruction_loss', 1.0)
@@ -1550,14 +1491,7 @@ class TrainingDashboard:
             print(f"⚠️ Warning: Could not parse encoder_hidden_dims, using default: {e}")
             self.config.config['transition']['encoder_hidden_dims'] = [200, 200]
         
-        # Update FNO settings
-        if 'fno' not in self.config.config['transition']:
-            self.config.config['transition']['fno'] = {}
-        self.config.config['transition']['fno']['width'] = self.transition_fno_width_input.value
-        self.config.config['transition']['fno']['modes_x'] = self.transition_fno_modes_x_input.value
-        self.config.config['transition']['fno']['modes_y'] = self.transition_fno_modes_y_input.value
-        self.config.config['transition']['fno']['modes_z'] = self.transition_fno_modes_z_input.value
-        self.config.config['transition']['fno']['n_layers'] = self.transition_fno_n_layers_input.value
+        # FNO settings removed - only linear transition supported
         
         # Update loss configuration
         self.config.config['loss']['lambda_reconstruction_loss'] = self.lambda_reconstruction_input.value

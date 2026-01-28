@@ -152,69 +152,63 @@ def train_split_data(SW_slt: List, SG_slt: List, PRES_slt: List, BHP_slt: List,
     BHP_eval = []
     Yobs_eval = []
     
-    print(f"Processing {len(SW_slt)} time steps...")
+    # Determine number of time steps from available data
+    # Use channel_data_slt if available, otherwise fall back to legacy channels
+    if channel_data_slt and len(channel_data_slt) > 0 and len(channel_data_slt[0]) > 0:
+        num_time_steps = len(channel_data_slt[0])
+    elif len(SW_slt) > 0:
+        num_time_steps = len(SW_slt)
+    elif len(SG_slt) > 0:
+        num_time_steps = len(SG_slt)
+    elif len(PRES_slt) > 0:
+        num_time_steps = len(PRES_slt)
+    else:
+        print("❌ No time step data available")
+        return None, None, None, None, None, None
     
-    for i_step in range(len(SW_slt)):
-        # Split data for this time step
-        if num_all < 100:
-            # Simple split for smaller datasets
-            sw_t_train[:] = SW_slt[i_step][:actual_train]
-            sg_t_train[:] = SG_slt[i_step][:actual_train]
-            pres_t_train[:] = PRES_slt[i_step][:actual_train]
-            
-            sw_t_eval[:] = SW_slt[i_step][actual_train:actual_train + actual_eval]
-            sg_t_eval[:] = SG_slt[i_step][actual_train:actual_train + actual_eval]
-            pres_t_eval[:] = PRES_slt[i_step][actual_train:actual_train + actual_eval]
-            
-            if i_step < len(BHP_slt) and BHP_slt:
+    print(f"Processing {num_time_steps} time steps...")
+    
+    for i_step in range(num_time_steps):
+        # Handle BHP and Yobs data splitting (independent of channel system)
+        if i_step < len(BHP_slt) and BHP_slt:
+            # Split BHP and Yobs data for this time step
+            if num_all < 100:
+                # Simple split for smaller datasets
                 bhp_t_train[:] = BHP_slt[i_step][:actual_train]
                 yobs_t_train[:] = Yobs_slt[i_step][:actual_train]
                 bhp_t_eval[:] = BHP_slt[i_step][actual_train:actual_train + actual_eval]
                 yobs_t_eval[:] = Yobs_slt[i_step][actual_train:actual_train + actual_eval]
-        else:
-            # Original splitting logic for larger datasets
-            for k in range(split_ratio):
-                ind0 = k * num_run_per_case
-                sw_t_train[ind0:ind0 + num_run_per_case] = SW_slt[i_step][k*100:k*100 + num_run_per_case]
-                sg_t_train[ind0:ind0 + num_run_per_case] = SG_slt[i_step][k*100:k*100 + num_run_per_case]
-                pres_t_train[ind0:ind0 + num_run_per_case] = PRES_slt[i_step][k*100:k*100 + num_run_per_case]
-                
-                if i_step < len(BHP_slt) and BHP_slt:
+            else:
+                # Original splitting logic for larger datasets
+                for k in range(split_ratio):
+                    ind0 = k * num_run_per_case
                     bhp_t_train[ind0:ind0 + num_run_per_case] = BHP_slt[i_step][k*100:k*100 + num_run_per_case]
                     yobs_t_train[ind0:ind0 + num_run_per_case] = Yobs_slt[i_step][k*100:k*100 + num_run_per_case]
-                
-                # Evaluation set
-                ind1 = k * num_run_eval
-                sw_t_eval[ind1:ind1 + num_run_eval] = SW_slt[i_step][k*100 + num_run_per_case:k*100 + 100]
-                sg_t_eval[ind1:ind1 + num_run_eval] = SG_slt[i_step][k*100 + num_run_per_case:k*100 + 100]
-                pres_t_eval[ind1:ind1 + num_run_eval] = PRES_slt[i_step][k*100 + num_run_per_case:k*100 + 100]
-                
-                if i_step < len(BHP_slt) and BHP_slt:
+                    
+                    # Evaluation set
+                    ind1 = k * num_run_eval
                     bhp_t_eval[ind1:ind1 + num_run_eval] = BHP_slt[i_step][k*100 + num_run_per_case:k*100 + 100]
                     yobs_t_eval[ind1:ind1 + num_run_eval] = Yobs_slt[i_step][k*100 + num_run_per_case:k*100 + 100]
-
-        # Reshape for 3D CNN: (batch, channels, Nx, Ny, Nz)
-        SW_t_train = sw_t_train.reshape((actual_train * num_t_slt, 1, Nx, Ny, Nz))
-        SG_t_train = sg_t_train.reshape((actual_train * num_t_slt, 1, Nx, Ny, Nz))
-        PRES_t_train = pres_t_train.reshape((actual_train * num_t_slt, 1, Nx, Ny, Nz))
-        
-        SW_t_eval = sw_t_eval.reshape((actual_eval * num_t_slt, 1, Nx, Ny, Nz))
-        SG_t_eval = sg_t_eval.reshape((actual_eval * num_t_slt, 1, Nx, Ny, Nz))
-        PRES_t_eval = pres_t_eval.reshape((actual_eval * num_t_slt, 1, Nx, Ny, Nz))
-        
-        if i_step < len(BHP_slt) and BHP_slt:
-            # BHP_slt[0] has shape (n_cases, n_timesteps, n_controls), so use shape[2] for controls
-            BHP_t_train = bhp_t_train.reshape((actual_train * num_t_slt, BHP_slt[0].shape[2]))
-            Yobs_t_train = yobs_t_train.reshape((actual_train * num_t_slt, Yobs_slt[0].shape[2]))
-            BHP_t_eval = bhp_t_eval.reshape((actual_eval * num_t_slt, BHP_slt[0].shape[2]))
-            Yobs_t_eval = yobs_t_eval.reshape((actual_eval * num_t_slt, Yobs_slt[0].shape[2]))
 
         # Create state tensors with dynamic channel support
         train_channels = []
         eval_channels = []
         
-        # Use the dynamic channel data from sliding window if available
+        # Use the dynamic channel data from sliding window if available (preferred method)
         if channel_data_slt and len(channel_data_slt) >= n_channels:
+            # VERIFICATION: Log channel order being processed
+            if i_step == 0:
+                print(f"    Processing channels in order: [0..{n_channels-1}] from channel_data_slt")
+                print(f"    Channel order: channel_data_slt[channel_idx] corresponds to training_channel_names[channel_idx]")
+                # CRITICAL VERIFICATION: Sample actual data from channel_data_slt to verify order
+                print(f"    VERIFYING channel_data_slt data order by sampling:")
+                for verify_idx in range(n_channels):
+                    if len(channel_data_slt[verify_idx]) > i_step:
+                        sample_channel_data = channel_data_slt[verify_idx][i_step]
+                        if sample_channel_data.size > 0:
+                            sample_mean = np.mean(sample_channel_data[:min(10, sample_channel_data.shape[0])])
+                            print(f"      channel_data_slt[{verify_idx}][{i_step}]: mean={sample_mean:.6f}")
+            
             for channel_idx in range(n_channels):
                 # Get channel data for this step
                 channel_data = channel_data_slt[channel_idx][i_step]
@@ -240,6 +234,12 @@ def train_split_data(SW_slt: List, SG_slt: List, PRES_slt: List, BHP_slt: List,
                 
                 train_channels.append(train_data_reshaped)
                 eval_channels.append(eval_data_reshaped)
+                
+                # VERIFICATION: On first step and first channel, log the order
+                if i_step == 0 and channel_idx == 0:
+                    print(f"    Appending channels to train_channels/eval_channels in order:")
+                    for verify_idx in range(n_channels):
+                        print(f"      Channel {verify_idx}: from channel_data_slt[{verify_idx}]")
         else:
             # Fallback to legacy data structure
             legacy_channels = []
@@ -264,6 +264,17 @@ def train_split_data(SW_slt: List, SG_slt: List, PRES_slt: List, BHP_slt: List,
         
         # Concatenate all channels
         if train_channels and eval_channels:
+            # VERIFICATION: Verify channel count before concatenation
+            if len(train_channels) != n_channels:
+                print(f"    ERROR: train_channels has {len(train_channels)} channels, expected {n_channels}")
+                raise ValueError(f"Channel count mismatch: train_channels has {len(train_channels)} channels, expected {n_channels}")
+            
+            # VERIFICATION: Log concatenation order
+            if i_step == 0:
+                print(f"    Concatenating {len(train_channels)} channels in order:")
+                for verify_idx in range(len(train_channels)):
+                    print(f"      Position {verify_idx}: train_channels[{verify_idx}] (from channel_data_slt[{verify_idx}])")
+            
             STATE_t_train = torch.tensor(
                 np.concatenate(train_channels, axis=1), 
                 dtype=torch.float32
@@ -272,29 +283,75 @@ def train_split_data(SW_slt: List, SG_slt: List, PRES_slt: List, BHP_slt: List,
                 np.concatenate(eval_channels, axis=1), 
                 dtype=torch.float32
             ).to(device)
+            
+            # VERIFICATION: Verify final tensor has correct number of channels
+            if STATE_t_train.shape[1] != n_channels:
+                print(f"    ERROR: Final STATE_t_train has {STATE_t_train.shape[1]} channels, expected {n_channels}")
+                raise ValueError(f"Final tensor channel count mismatch: {STATE_t_train.shape[1]} != {n_channels}")
+            
+            # CRITICAL VERIFICATION: Sample the concatenated tensor to verify channel order
+            # This checks if np.concatenate preserved the order correctly
+            if i_step == 0:
+                print(f"    Verified: Final tensor has {STATE_t_train.shape[1]} channels matching expected order")
+                print(f"    VERIFYING concatenated tensor channel order by sampling:")
+                sample_size = min(10, STATE_t_train.shape[0])
+                
+                # Compare concatenated tensor channels with original train_channels
+                for ch_idx in range(STATE_t_train.shape[1]):
+                    # Sample from concatenated tensor
+                    concat_sample = STATE_t_train[:sample_size, ch_idx, :, :, :].cpu().numpy()
+                    concat_mean = np.mean(concat_sample)
+                    
+                    # Sample from original train_channels[ch_idx]
+                    if ch_idx < len(train_channels):
+                        orig_sample = train_channels[ch_idx][:sample_size, 0, :, :, :]
+                        orig_mean = np.mean(orig_sample)
+                        
+                        # Check if they match (within tolerance)
+                        mean_diff = abs(concat_mean - orig_mean)
+                        match_status = "MATCH" if mean_diff < 1e-5 else "MISMATCH"
+                        print(f"      Channel {ch_idx}: concat_mean={concat_mean:.6f}, orig_mean={orig_mean:.6f}, diff={mean_diff:.8f} [{match_status}]")
+                    else:
+                        print(f"      Channel {ch_idx}: concat_mean={concat_mean:.6f}, (no original to compare)")
+                
+                print(f"    NOTE: If channels don't match, np.concatenate may have scrambled the order")
         else:
             print(f"    ❌ Error: No channel data available for n_channels={n_channels}")
             return None, None, None, None, None, None
         
         # Apply shuffling
         STATE_t_train = STATE_t_train[shuffle_ind_train]
-        if i_step < len(BHP_slt) and BHP_slt:
-            BHP_t_train = torch.tensor(BHP_t_train[shuffle_ind_train], dtype=torch.float32).to(device)
-            Yobs_t_train = torch.tensor(Yobs_t_train[shuffle_ind_train], dtype=torch.float32).to(device)
-
         STATE_t_eval = STATE_t_eval[shuffle_ind_eval]
-        if i_step < len(BHP_slt) and BHP_slt:
-            BHP_t_eval = torch.tensor(BHP_t_eval[shuffle_ind_eval], dtype=torch.float32).to(device)
-            Yobs_t_eval = torch.tensor(Yobs_t_eval[shuffle_ind_eval], dtype=torch.float32).to(device)
+        
+        # Handle BHP and Yobs tensors (only if BHP_slt has data)
+        BHP_t_train_tensor = None
+        Yobs_t_train_tensor = None
+        BHP_t_eval_tensor = None
+        Yobs_t_eval_tensor = None
+        
+        if i_step < len(BHP_slt) and BHP_slt and len(BHP_slt) > 0:
+            # Reshape BHP and Yobs to 2D: (batch * timesteps, features)
+            BHP_t_train_reshaped = bhp_t_train.reshape((actual_train * num_t_slt, BHP_slt[0].shape[2]))
+            Yobs_t_train_reshaped = yobs_t_train.reshape((actual_train * num_t_slt, Yobs_slt[0].shape[2]))
+            BHP_t_eval_reshaped = bhp_t_eval.reshape((actual_eval * num_t_slt, BHP_slt[0].shape[2]))
+            Yobs_t_eval_reshaped = yobs_t_eval.reshape((actual_eval * num_t_slt, Yobs_slt[0].shape[2]))
+            
+            # Apply shuffling and convert to tensors
+            BHP_t_train_tensor = torch.tensor(BHP_t_train_reshaped[shuffle_ind_train], dtype=torch.float32).to(device)
+            Yobs_t_train_tensor = torch.tensor(Yobs_t_train_reshaped[shuffle_ind_train], dtype=torch.float32).to(device)
+            BHP_t_eval_tensor = torch.tensor(BHP_t_eval_reshaped[shuffle_ind_eval], dtype=torch.float32).to(device)
+            Yobs_t_eval_tensor = torch.tensor(Yobs_t_eval_reshaped[shuffle_ind_eval], dtype=torch.float32).to(device)
 
         # Store processed data
         STATE_train.append(STATE_t_train)
         STATE_eval.append(STATE_t_eval)
-        if i_step < len(BHP_slt) and BHP_slt:
-            BHP_train.append(BHP_t_train)
-            BHP_eval.append(BHP_t_eval)
-            Yobs_train.append(Yobs_t_train)
-            Yobs_eval.append(Yobs_t_eval)
+        
+        # Only append BHP and Yobs if they were created
+        if BHP_t_train_tensor is not None:
+            BHP_train.append(BHP_t_train_tensor)
+            Yobs_train.append(Yobs_t_train_tensor)
+            BHP_eval.append(BHP_t_eval_tensor)
+            Yobs_eval.append(Yobs_t_eval_tensor)
 
     print(f"Data splitting complete: {len(STATE_train)} training batches")
     

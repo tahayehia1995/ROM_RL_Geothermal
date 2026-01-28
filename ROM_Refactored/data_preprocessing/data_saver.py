@@ -65,20 +65,51 @@ def save_normalization_parameters(norm_params: Dict[str, Any], data_dir: str, ns
     }
     
     # Store spatial channel normalization parameters
+    # CRITICAL: Save in training_channel_names order if available, otherwise use all_spatial_properties order
     if all_spatial_properties:
-        for var_name, filename in all_spatial_properties.items():
-            if var_name in norm_params:
-                norm_config['spatial_channels'][var_name] = {
-                    'filename': filename,
-                    'normalization_type': normalization_preferences.get(var_name, 'minmax') if normalization_preferences else 'minmax',
-                    'parameters': norm_params[var_name],
-                    'selected_for_training': var_name in selected_training_channels if selected_training_channels else False
-                }
+        # Determine the order to save channels
+        if training_channel_names:
+            # Save in training_channel_names order first (preserves user selection order)
+            save_order = training_channel_names.copy()
+            # Then add any remaining channels from all_spatial_properties
+            remaining_channels = [name for name in all_spatial_properties.keys() if name not in training_channel_names]
+            save_order.extend(remaining_channels)
+            print(f"  📋 Saving spatial_channels in training_channel_names order: {save_order}")
+        else:
+            # Fallback: use all_spatial_properties order
+            save_order = list(all_spatial_properties.keys())
+            print(f"  ⚠️ WARNING: No training_channel_names provided, using all_spatial_properties order")
+        
+        for var_name in save_order:
+            if var_name in all_spatial_properties and var_name in norm_params:
+                filename = all_spatial_properties[var_name]
+                norm_params_var = norm_params[var_name]
+                
+                # Check if per-layer normalization was used
+                if norm_params_var.get('per_layer', False):
+                    # Per-layer normalization: save nested structure
+                    norm_config['spatial_channels'][var_name] = {
+                        'filename': filename,
+                        'normalization_type': normalization_preferences.get(var_name, 'minmax') if normalization_preferences else 'minmax',
+                        'parameters': norm_params_var,  # Already contains per_layer flag and layers dict
+                        'selected_for_training': var_name in selected_training_channels if selected_training_channels else False
+                    }
+                    num_layers = len(norm_params_var.get('layers', {}))
+                    print(f"    Saving per-layer normalization for {var_name} ({num_layers} layers)")
+                else:
+                    # Global normalization: save existing flat structure (backward compatibility)
+                    norm_config['spatial_channels'][var_name] = {
+                        'filename': filename,
+                        'normalization_type': normalization_preferences.get(var_name, 'minmax') if normalization_preferences else 'minmax',
+                        'parameters': norm_params_var,
+                        'selected_for_training': var_name in selected_training_channels if selected_training_channels else False
+                    }
                 
                 # Add training position if selected
                 if training_channel_names and var_name in training_channel_names:
                     training_position = training_channel_names.index(var_name)
                     norm_config['spatial_channels'][var_name]['training_position'] = training_position
+                    print(f"    Channel {training_position}: {var_name} -> {filename}")
     
     # Store control variable normalization parameters
     if selected_controls:
@@ -109,8 +140,17 @@ def save_normalization_parameters(norm_params: Dict[str, Any], data_dir: str, ns
         norm_config['channel_mapping'] = training_channel_mapping
     
     # Store selection summary
+    # CRITICAL: Use training_channel_names (preserves order) if available, otherwise fallback to selected_training_channels
+    if training_channel_names:
+        training_channels_list = training_channel_names  # Preserves user selection order
+    elif selected_training_channels:
+        # Fallback: convert dict keys to list (order may not be preserved)
+        training_channels_list = list(selected_training_channels) if isinstance(selected_training_channels, dict) else selected_training_channels
+    else:
+        training_channels_list = []
+    
     norm_config['selection_summary'] = {
-        'training_channels': list(selected_training_channels) if selected_training_channels else [],
+        'training_channels': training_channels_list,  # Preserves user selection order
         'control_wells_by_variable': {var: config.get('wells', []) for var, config in selected_controls.items()} if selected_controls else {},
         'observation_wells_by_variable': {var: config.get('wells', []) for var, config in selected_observations.items()} if selected_observations else {}
     }

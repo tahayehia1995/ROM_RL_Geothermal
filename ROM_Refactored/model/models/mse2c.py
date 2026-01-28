@@ -26,13 +26,35 @@ class MSE2C(nn.Module):
         transition_type = self.config['transition'].get('type', 'linear')
         
         if transition_type == 'fno':
-            from model.models.fno_transition import FNOTransitionModel
-            self.transition = FNOTransitionModel(self.config)
-            self.transition_mode = 'spatial'  # FNO operates on spatial states
+            try:
+                from model.models.fno_transition import FNOTransitionModel
+                self.transition = FNOTransitionModel(self.config)
+                self.transition_mode = 'spatial'  # FNO operates on spatial states
+            except ImportError:
+                import warnings
+                warnings.warn(
+                    "FNO transition model not available. Falling back to linear transition.",
+                    UserWarning
+                )
+                transition_type = 'linear'
+                from model.models.linear_transition import LinearTransitionModel
+                self.transition = LinearTransitionModel(self.config)
+                self.transition_mode = 'latent'
         elif transition_type == 'hybrid_fno':
-            from model.models.hybrid_fno_transition import HybridFNOTransitionModel
-            self.transition = HybridFNOTransitionModel(self.config)
-            self.transition_mode = 'hybrid'  # Can operate on both spatial and latent
+            try:
+                from model.models.hybrid_fno_transition import HybridFNOTransitionModel
+                self.transition = HybridFNOTransitionModel(self.config)
+                self.transition_mode = 'hybrid'  # Can operate on both spatial and latent
+            except ImportError:
+                import warnings
+                warnings.warn(
+                    "Hybrid FNO transition model not available. Falling back to linear transition.",
+                    UserWarning
+                )
+                transition_type = 'linear'
+                from model.models.linear_transition import LinearTransitionModel
+                self.transition = LinearTransitionModel(self.config)
+                self.transition_mode = 'latent'
         else:
             from model.models.linear_transition import LinearTransitionModel
             self.transition = LinearTransitionModel(self.config)
@@ -103,8 +125,11 @@ class MSE2C(nn.Module):
                 
         elif self.transition_mode == 'hybrid':
             # Hybrid model can use both approaches
-            hybrid_fno_config = getattr(self.config.transition, 'hybrid_fno', {})
-            mode = getattr(hybrid_fno_config, 'forward_mode', 'fno_only')
+            hybrid_fno_config = self.config['transition'].get('hybrid_fno', {})
+            if isinstance(hybrid_fno_config, dict):
+                mode = hybrid_fno_config.get('forward_mode', 'fno_only')
+            else:
+                mode = getattr(hybrid_fno_config, 'forward_mode', 'fno_only')
             
             if mode == 'fno_only':
                 # Use spatial approach
@@ -170,7 +195,7 @@ class MSE2C(nn.Module):
                 xt_next_pred = self.decoder(zt_next)
                 return xt_next_pred, yt_next
         else:
-            # Traditional latent-based approach
+            # Traditional latent-based approach (used for linear transition)
             zt = self.encoder(xt)
             zt_next, yt_next = self.transition(zt, dt, ut)
             xt_next_pred = self.decoder(zt_next)

@@ -11,8 +11,10 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter, MaxNLocator, ScalarFormatter
 import os
 import json
+import io
 from datetime import datetime
 from pathlib import Path
+from PIL import Image
 
 # Widget imports
 try:
@@ -58,6 +60,19 @@ def format_3digits(x, pos):
         return f'{rounded:.3f}'
 
 
+def _safe_tight_layout():
+    """Safely call tight_layout with fallback to subplots_adjust if it fails"""
+    try:
+        plt.tight_layout()
+    except Exception:
+        # If tight_layout fails (e.g., LinAlgError from singular matrix), use subplots_adjust as fallback
+        try:
+            plt.subplots_adjust(left=0.1, right=0.95, top=0.9, bottom=0.1)
+        except Exception:
+            # If that also fails, just continue without layout adjustment
+            pass
+
+
 class InteractiveVisualizationDashboard:
     """
     Interactive dashboard for visualizing E2C model predictions with case-specific masking
@@ -74,7 +89,7 @@ class InteractiveVisualizationDashboard:
                  my_rom=None, test_controls=None, test_observations=None, device=None,
                  train_state_pred=None, train_state_seq_true_aligned=None, 
                  train_yobs_pred=None, train_yobs_seq_true=None, train_case_indices=None,
-                 loaded_data=None):
+                 loaded_data=None, true_data_is_raw=False):
         """
         Initialize the interactive dashboard
         
@@ -113,6 +128,7 @@ class InteractiveVisualizationDashboard:
         self.yobs_pred = yobs_pred  # Current predictions (default: state-based)
         self.yobs_seq_true = yobs_seq_true
         self.test_case_indices = test_case_indices
+        self.true_data_is_raw = true_data_is_raw
         
         # Ensure normalization parameters have proper data types (convert strings to numbers)
         self.norm_params = self._ensure_norm_params_types(norm_params) if norm_params else {}
@@ -181,14 +197,6 @@ class InteractiveVisualizationDashboard:
         self.yobs_pred_latent_based = None  # Will store latent-based predictions
         self.predictions_generated = False
         
-        # Initialize evaluation metrics
-        self.metrics_evaluator = ModelEvaluationMetrics(
-            state_pred, state_seq_true_aligned, yobs_pred, yobs_seq_true, 
-            channel_names=channel_names
-        )
-        # Set reference to dashboard for inactive cell masking
-        self.metrics_evaluator.dashboard_ref = self
-        
         # Ensure consistent inactive cell masking across all metrics calculations
         if hasattr(self, '_get_layer_mask'):
             print(f"🎭 Inactive cell masking system initialized and ready")
@@ -211,6 +219,25 @@ class InteractiveVisualizationDashboard:
         
         # Store channel names - CRITICAL: These must match the order in state_pred tensors!
         self.channel_names = channel_names if channel_names else []
+        
+        # CRITICAL VALIDATION: Verify channel_names matches tensor channel order
+        if channel_names:
+            # Verify state_pred tensor channel count matches channel_names length
+            if state_pred is not None and len(state_pred.shape) >= 3:
+                tensor_n_channels = state_pred.shape[2]
+                if len(channel_names) != tensor_n_channels:
+                    raise ValueError(f"CRITICAL ERROR: channel_names length ({len(channel_names)}) != state_pred channels ({tensor_n_channels})!")
+            
+            # Verify state_seq_true_aligned tensor channel count matches channel_names length
+            if state_seq_true_aligned is not None and len(state_seq_true_aligned.shape) >= 2:
+                tensor_n_channels_true = state_seq_true_aligned.shape[1]
+                if len(channel_names) != tensor_n_channels_true:
+                    raise ValueError(f"CRITICAL ERROR: channel_names length ({len(channel_names)}) != state_seq_true_aligned channels ({tensor_n_channels_true})!")
+            
+            print(f"✅ Dashboard channel order validation passed:")
+            print(f"   channel_names: {channel_names}")
+            print(f"   state_pred channels: {state_pred.shape[2] if state_pred is not None and len(state_pred.shape) >= 3 else 'N/A'}")
+            print(f"   state_seq_true_aligned channels: {state_seq_true_aligned.shape[1] if state_seq_true_aligned is not None and len(state_seq_true_aligned.shape) >= 2 else 'N/A'}")
         
         # Field names and observation names - update based on channel selection
         if channel_names:
@@ -237,31 +264,104 @@ class InteractiveVisualizationDashboard:
                 else:
                     self.field_names.append(name_upper.replace('_', ' ').title())
             
-            # DIAGNOSTIC: Print channel mapping for verification
-            print("\n" + "="*70)
-            print("🔍 CHANNEL MAPPING VERIFICATION")
-            print("="*70)
-            print(f"Channel order in tensors (state_pred[:, :, channel_idx, ...]):")
-            for idx, (ch_name, field_key, field_name) in enumerate(zip(channel_names, self.field_keys, self.field_names)):
-                print(f"   Channel {idx}: '{ch_name}' -> field_key='{field_key}' -> display='{field_name}'")
-            print("="*70 + "\n")
         else:
-            # Default names for backward compatibility
             self.field_names = ['Water Saturation', 'Gas Saturation', 'Pressure']
             self.field_keys = ['SW', 'SG', 'PRES']
-            print("⚠️ WARNING: No channel_names provided! Using default mapping.")
-            print("   This may cause incorrect field mapping if your data uses different channels!")
-        self.obs_names = ['Inj1 BHP', 'Inj2 BHP', 'Inj3 BHP', 
-                         'Prod1 Energy', 'Prod2 Energy', 'Prod3 Energy',
-                         'Prod1 Water', 'Prod2 Water', 'Prod3 Water']
-        self.obs_units = ['psi','psi','psi','BTU/Day','BTU/Day', 'BTU/Day', 'bbl/day', 'bbl/day','bbl/day']
+        
+        # Load observation and control definitions from config (must be before metrics initialization)
+        self._load_observation_definitions()
         
         # Load well locations from config
         self._load_well_locations()
         
+        # Initialize evaluation metrics (after observation definitions are loaded)
+        self.metrics_evaluator = ModelEvaluationMetrics(
+            state_pred, state_seq_true_aligned, yobs_pred, yobs_seq_true, 
+            channel_names=channel_names, 
+            obs_names=self.obs_names if hasattr(self, 'obs_names') else None,
+            obs_units=self.obs_units if hasattr(self, 'obs_units') else None,
+            obs_variable_map=self.obs_variable_map if hasattr(self, 'obs_variable_map') else None,
+            obs_indices_map=self.obs_indices_map if hasattr(self, 'obs_indices_map') else None,
+            true_data_is_raw=true_data_is_raw
+        )
+        # Set reference to dashboard for inactive cell masking
+        self.metrics_evaluator.dashboard_ref = self
+        
         # Create widgets
         self._create_widgets()
         
+    def _load_observation_definitions(self):
+        """Load observation and control variable definitions from config file"""
+        # Default values (fallback if config not available)
+        self.obs_names = ['Inj1 BHP', 'Inj2 BHP', 'Inj3 BHP', 
+                         'Prod1 Energy', 'Prod2 Energy', 'Prod3 Energy',
+                         'Prod1 Water', 'Prod2 Water', 'Prod3 Water']
+        self.obs_units = ['psi','psi','psi','BTU/Day','BTU/Day', 'BTU/Day', 'bbl/day', 'bbl/day','bbl/day']
+        self.obs_variable_map = {}  # Maps observation index to variable name
+        self.obs_indices_map = {}  # Maps variable name to indices
+        self.obs_groups_map = {}  # Maps group names to (indices, well_names, unit)
+        
+        if CONFIG_LOADER_AVAILABLE:
+            try:
+                config = load_config('config.yaml')
+                data_config = config.get('data', {})
+                obs_config = data_config.get('observations', {})
+                
+                if obs_config and 'variables' in obs_config:
+                    obs_vars = obs_config['variables']
+                    obs_order = obs_config.get('order', ['BHP', 'ENERGYRATE', 'WATRATRC'])
+                    
+                    # Build observation names and units from config
+                    obs_names_list = []
+                    obs_units_list = []
+                    obs_indices_map = {}
+                    obs_groups_map = {}
+                    
+                    for var_name in obs_order:
+                        if var_name in obs_vars:
+                            var_config = obs_vars[var_name]
+                            indices = var_config.get('indices', [])
+                            well_names = var_config.get('well_names', [])
+                            unit_display = var_config.get('unit_display', '')
+                            group_name = var_config.get('group_name', '')
+                            
+                            # Store mapping
+                            obs_indices_map[var_name] = indices
+                            for idx in indices:
+                                self.obs_variable_map[idx] = var_name
+                            
+                            # Build display names and units
+                            for i, well_name in enumerate(well_names):
+                                if var_name == 'BHP':
+                                    display_name = f"{well_name} BHP"
+                                elif var_name == 'ENERGYRATE':
+                                    display_name = f"{well_name} Energy"
+                                elif var_name == 'WATRATRC':
+                                    display_name = f"{well_name} Water"
+                                else:
+                                    display_name = f"{well_name} {var_config.get('display_name', var_name)}"
+                                
+                                obs_names_list.append(display_name)
+                                obs_units_list.append(unit_display)
+                            
+                            # Store group mapping
+                            if group_name:
+                                obs_groups_map[group_name] = (indices, well_names, unit_display)
+                    
+                    self.obs_names = obs_names_list
+                    self.obs_units = obs_units_list
+                    self.obs_indices_map = obs_indices_map
+                    self.obs_groups_map = obs_groups_map
+                    
+                    print(f"✅ Loaded observation definitions from config: {len(obs_order)} observation types")
+                else:
+                    print("⚠️ No observation definitions found in config.yaml, using defaults")
+            except Exception as e:
+                print(f"⚠️ Could not load observation definitions from config: {e}")
+                print("   Using default observation names and units")
+        else:
+            print("⚠️ Config loader not available - using default observation definitions")
+    
     def _load_well_locations(self):
         """Load well locations from config file"""
         self.well_locations = {'injectors': {}, 'producers': {}}
@@ -414,6 +514,15 @@ class InteractiveVisualizationDashboard:
             disabled=(self.my_rom is None)  # Disable if no ROM model provided
         )
         
+        # Checkbox to show/hide state-based predictions
+        self.show_state_based_checkbox = widgets.Checkbox(
+            value=True,  # Show by default
+            description='👁️ Show State-based Predictions',
+            style={'description_width': 'initial'},
+            layout=widgets.Layout(width='400px'),
+            disabled=(self.my_rom is None)  # Disable if no ROM model provided
+        )
+        
         # Output areas
         self.spatial_output = widgets.Output()
         self.timeseries_output = widgets.Output()
@@ -451,6 +560,9 @@ class InteractiveVisualizationDashboard:
         
         # Comparison mode handler
         self.comparison_mode_checkbox.observe(self._on_comparison_mode_toggle, names='value')
+        
+        # Show state-based predictions handler
+        self.show_state_based_checkbox.observe(self._on_show_state_based_toggle, names='value')
         
         # Add handlers for metrics updates
         self.spatial_case_slider.observe(self._update_spatial_metrics, names='value')
@@ -583,45 +695,32 @@ class InteractiveVisualizationDashboard:
         self.comparison_mode_enabled = change['new']
         
         if self.comparison_mode_enabled:
-            print("🔬 Comparison mode enabled: Generating both state-based and latent-based predictions...")
-            
-            # Generate both prediction types if not already done
             if not self.predictions_generated:
                 self._generate_comparison_predictions()
-            
-            print("✅ Comparison mode ready! Timeseries plots will show both prediction methods.")
-        else:
-            print("🔬 Comparison mode disabled: Showing default predictions only.")
         
         # Update timeseries plot to reflect the change
         self._update_timeseries_plot()
     
+    def _on_show_state_based_toggle(self, change):
+        """Handle show state-based predictions checkbox toggle"""
+        if self.comparison_mode_enabled:
+            # Only update if comparison mode is enabled
+            self._update_timeseries_plot()
+    
     def _generate_comparison_predictions(self):
         """Generate both state-based and latent-based predictions for comparison"""
         if self.my_rom is None or self.test_controls is None or self.test_observations is None:
-            print("❌ Cannot generate comparison predictions: ROM model or test data not provided")
             return
-        
-        print("🚀 Generating predictions using both methods...")
-        print("   📊 This may take a moment for large datasets...")
         
         try:
             import torch
             import numpy as np
             
-            # Use the current yobs_pred as state-based predictions (assuming default mode)
             self.yobs_pred_state_based = self.yobs_pred.clone()
-            
-            # Generate latent-based predictions
-            print("   ⚡ Generating latent-based predictions...")
             self.yobs_pred_latent_based = self._generate_latent_predictions()
-            
             self.predictions_generated = True
-            print("✅ Both prediction types generated successfully!")
             
         except Exception as e:
-            print(f"❌ Error generating comparison predictions: {e}")
-            print("   Using default predictions only.")
             self.comparison_mode_enabled = False
             self.comparison_mode_checkbox.value = False
     
@@ -708,10 +807,8 @@ class InteractiveVisualizationDashboard:
                     if debug:
                         active_cells = np.sum(layer_mask_2d)
                         total_cells = layer_mask_2d.size
-                        print(f"🔍 Layer Mask Diagnostic - Case {case_idx} (actual: {actual_case_idx}, mask_idx: {mask_case_idx}), Layer {layer_idx}:")
-                        print(f"   Active cells: {active_cells}/{total_cells} ({100*active_cells/total_cells:.1f}%)")
                         if active_cells == 0:
-                            print(f"   ⚠️ WARNING: Layer {layer_idx} has NO active cells! All data will be masked out.")
+                            pass
                     
                     return layer_mask_2d
                     
@@ -719,31 +816,19 @@ class InteractiveVisualizationDashboard:
                     # Use global mask for all cases: (Nx, Ny, Nz)
                     layer_mask_2d = self.active_mask_3d[:, :, layer_idx]  # Shape: (Nx, Ny)
                     
-                    # Diagnostic output
                     if debug:
                         active_cells = np.sum(layer_mask_2d)
-                        total_cells = layer_mask_2d.size
-                        print(f"🔍 Layer Mask Diagnostic - Case {case_idx}, Layer {layer_idx} (global mask):")
-                        print(f"   Active cells: {active_cells}/{total_cells} ({100*active_cells/total_cells:.1f}%)")
                         if active_cells == 0:
-                            print(f"   ⚠️ WARNING: Layer {layer_idx} has NO active cells! All data will be masked out.")
+                            pass
                     
                     return layer_mask_2d
                     
                 else:
-                    if debug:
-                        print(f"🔍 Layer Mask Diagnostic - Case {case_idx}, Layer {layer_idx}: Unknown mask type, using all-active mask")
                     return np.ones((self.Nx, self.Ny), dtype=bool)
                     
             except Exception as e:
-                if debug:
-                    print(f"🔍 Layer Mask Diagnostic - Case {case_idx}, Layer {layer_idx}: Exception occurred: {e}")
-                    print(f"   Falling back to all-active mask")
                 return np.ones((self.Nx, self.Ny), dtype=bool)
         
-        # If no mask loaded or masking disabled, return all active (no masking)
-        if debug:
-            print(f"🔍 Layer Mask Diagnostic - Case {case_idx}, Layer {layer_idx}: No masking enabled, using all-active mask")
         return np.ones((self.Nx, self.Ny), dtype=bool)
     
     def _get_all_layer_masks_vectorized(self, case_indices, use_training_data=False):
@@ -833,20 +918,47 @@ class InteractiveVisualizationDashboard:
             n_cases = len(case_indices) if case_indices is not None else 1
             return np.ones((n_cases, self.Nx, self.Ny, self.Nz), dtype=bool)
         
-    def _denormalize_field_data(self, data, field_key, debug=False):
-        """Denormalize field data using stored parameters"""
+    def _denormalize_field_data(self, data, field_key, layer_idx=None, debug=False):
+        """Denormalize field data using stored parameters
+        
+        Args:
+            data: Normalized data to denormalize (2D array for a single layer)
+            field_key: Key to look up normalization parameters (must match norm_params key exactly)
+            layer_idx: Layer index for per-layer denormalization (required if per_layer=True)
+            debug: Enable debug logging
+        """
         if field_key not in self.norm_params:
-            print(f"⚠️ Warning: No normalization parameters found for {field_key}")
+            print(f"⚠️ Warning: No normalization parameters found for field_key='{field_key}'")
+            print(f"   Available normalization keys: {list(self.norm_params.keys())}")
             return data
             
         norm_params = self.norm_params[field_key]
         
+        # Check if per-layer normalization was used
+        if norm_params.get('per_layer', False):
+            if layer_idx is None:
+                print(f"⚠️ Warning: layer_idx required for per-layer denormalization of {field_key}, using layer 0")
+                layer_idx = 0
+            
+            layer_key = f'layer_{layer_idx}'
+            if layer_key not in norm_params.get('layers', {}):
+                print(f"⚠️ Warning: Layer {layer_idx} parameters not found for {field_key}, using layer 0")
+                layer_key = 'layer_0'
+            
+            layer_params = norm_params['layers'][layer_key]
+            
+            if debug:
+                print(f"   Denormalizing with field_key='{field_key}', layer_idx={layer_idx}")
+                print(f"   Normalization type: {layer_params.get('type', 'unknown')} (per-layer)")
+            
+            # Use denormalize_data function with layer-specific parameters
+            from data_preprocessing.normalization import denormalize_data
+            return denormalize_data(data, norm_params, layer_idx=layer_idx)
+        
+        # Global normalization (backward compatibility)
         if debug:
-            print(f"🔍 Denormalization Diagnostic - Field: {field_key}, Type: {norm_params.get('type', 'unknown')}")
-            print(f"   Input data range: [{np.nanmin(data):.6f}, {np.nanmax(data):.6f}]")
-            print(f"   Input data shape: {data.shape}")
-            print(f"   Input NaN count: {np.sum(np.isnan(data))}")
-            print(f"   Input Inf count: {np.sum(np.isinf(data))}")
+            print(f"   Denormalizing with field_key='{field_key}'")
+            print(f"   Normalization type: {norm_params.get('type', 'unknown')} (global)")
         
         if norm_params.get('type') == 'none':
             # Data was not normalized, return as-is
@@ -878,7 +990,49 @@ class InteractiveVisualizationDashboard:
             # This handles cases where model predictions slightly exceed normalization bounds
             data_clamped = np.clip(data, 0.0, 1.0)
             
-            log_data = data_clamped * (log_max - log_min) + log_min
+            # CRITICAL FIX: Handle case where log_max == log_min (constant layer in training data)
+            # When training data was constant, normalization sets all values to 0
+            # But model predictions may have variation, which we need to preserve
+            if abs(log_max - log_min) < 1e-10:  # Effectively zero range
+                # Training data was constant, so original value was: exp(log_min) - epsilon + data_shift
+                constant_value = np.exp(log_min) - norm_params.get('epsilon', 1e-8) + norm_params.get('data_shift', 0)
+                
+                # Check if normalized data has variation (model predictions differ from training constant)
+                data_min = np.nanmin(data_clamped)
+                data_max = np.nanmax(data_clamped)
+                has_variation = (data_max - data_min) > 1e-6
+                
+                if debug:
+                    print(f"   ⚠️ Zero-range log normalization detected (log_min={log_min:.6e} == log_max={log_max:.6e})")
+                    print(f"   Normalized data range: [{data_min:.6e}, {data_max:.6e}]")
+                    print(f"   Has variation: {has_variation}")
+                    if has_variation:
+                        print(f"   Using epsilon range to preserve model prediction variation")
+                    else:
+                        print(f"   Returning constant value: {constant_value:.6e}")
+                
+                if has_variation:
+                    # Model predicted variation, but training data was constant
+                    # Map normalized variation to a small percentage range around the constant value
+                    # Use ±5% of constant value as the denormalization range
+                    # This preserves model variation while keeping it physically reasonable
+                    epsilon_param = norm_params.get('epsilon', 1e-8)
+                    data_shift_param = norm_params.get('data_shift', 0)
+                    constant_value = np.exp(log_min) - epsilon_param + data_shift_param
+                    percent_range = 0.05  # 5% variation
+                    if constant_value > 0:
+                        log_range = np.log(constant_value * (1 + percent_range)) - np.log(constant_value * (1 - percent_range))
+                        log_data = data_clamped * log_range + np.log(constant_value * (1 - percent_range))
+                    else:
+                        # Fallback: use small epsilon range if constant value is zero or negative
+                        log_range_epsilon = 1e-6
+                        log_data = data_clamped * log_range_epsilon + (log_min - log_range_epsilon / 2)
+                else:
+                    # Normalized data is also constant (matches training), return constant value
+                    log_data = np.full_like(data_clamped, log_min)
+            else:
+                # Normal case: log_max != log_min
+                log_data = data_clamped * (log_max - log_min) + log_min
             
             if debug:
                 print(f"   After log scaling: range=[{np.nanmin(log_data):.6f}, {np.nanmax(log_data):.6f}]")
@@ -978,62 +1132,66 @@ class InteractiveVisualizationDashboard:
             
             return denormalized
         
+    def _maybe_log_transform_spatial(self, field_key, pred_data, true_data):
+        """
+        Optionally apply log10 transform for permeability-like fields to improve visual contrast.
+        This only affects visualization, not underlying data or saved outputs.
+        
+        DISABLED: Log transform removed - using normal scale for permeability visualization.
+        """
+        # Log transform disabled - return data unchanged
+        return pred_data, true_data, ""
+        
+        # Original code (disabled):
+        # perm_keys = {'PERMI', 'PERM', 'PERMJ', 'PERMK'}
+        # if field_key in perm_keys:
+        #     pred_max = np.nanmax(pred_data)
+        #     true_max = np.nanmax(true_data)
+        #     # Only apply log scale if values are very small (typical for permeability in m^2)
+        #     if max(pred_max, true_max) < 1e-6:
+        #         epsilon = 1e-18
+        #         pred_log = np.log10(np.clip(pred_data, epsilon, None))
+        #         true_log = np.log10(np.clip(true_data, epsilon, None))
+        #         return pred_log, true_log, "log10 "
+        # return pred_data, true_data, ""
+        
     def _denormalize_obs_data(self, data, obs_idx):
         """Denormalize observation data based on observation type with support for 'none' normalization"""
-        if obs_idx < 3:  # BHP data
-            if 'BHP' in self.norm_params:
-                norm_params = self.norm_params['BHP']
-                if norm_params.get('type') == 'none':
-                    return data  # No normalization was applied, return as-is
-                elif norm_params.get('type') == 'log':
-                    # Reverse log normalization
-                    log_min = norm_params['log_min']
-                    log_max = norm_params['log_max']
-                    log_data = data * (log_max - log_min) + log_min
-                    epsilon = norm_params.get('epsilon', 1e-8)
-                    data_shift = norm_params.get('data_shift', 0)
-                    return np.exp(log_data) - epsilon + data_shift
-                else:
-                    # Standard min-max denormalization
-                    obs_min = norm_params['min']
-                    obs_max = norm_params['max']
-                    return data * (obs_max - obs_min) + obs_min
-        elif obs_idx < 6:  # Energy production (indices 3-5)
-            if 'ENERGYRATE' in self.norm_params:
-                norm_params = self.norm_params['ENERGYRATE']
-                if norm_params.get('type') == 'none':
-                    return data  # No normalization was applied, return as-is
-                elif norm_params.get('type') == 'log':
-                    # Reverse log normalization
-                    log_min = norm_params['log_min']
-                    log_max = norm_params['log_max']
-                    log_data = data * (log_max - log_min) + log_min
-                    epsilon = norm_params.get('epsilon', 1e-8)
-                    data_shift = norm_params.get('data_shift', 0)
-                    return np.exp(log_data) - epsilon + data_shift
-                else:
-                    # Standard min-max denormalization
-                    obs_min = norm_params['min'] 
-                    obs_max = norm_params['max']
-                    return data * (obs_max - obs_min) + obs_min
-        else:  # Water production (indices 6-8)
-            if 'WATRATRC' in self.norm_params:
-                norm_params = self.norm_params['WATRATRC']
-                if norm_params.get('type') == 'none':
-                    return data  # No normalization was applied, return as-is
-                elif norm_params.get('type') == 'log':
-                    # Reverse log normalization
-                    log_min = norm_params['log_min']
-                    log_max = norm_params['log_max']
-                    log_data = data * (log_max - log_min) + log_min
-                    epsilon = norm_params.get('epsilon', 1e-8)
-                    data_shift = norm_params.get('data_shift', 0)
-                    return np.exp(log_data) - epsilon + data_shift
-                else:
-                    # Standard min-max denormalization
-                    obs_min = norm_params['min']
-                    obs_max = norm_params['max']
-                    return data * (obs_max - obs_min) + obs_min
+        # Get variable name from observation index using config-based mapping
+        var_name = self.obs_variable_map.get(obs_idx, None)
+        
+        if var_name is None:
+            # Fallback to old hard-coded logic if mapping not available
+            # Fallback to hard-coded logic if mapping not available
+            # Note: Observation indices are defined in config.yaml data.observations.variables
+            if obs_idx < 3:  # Default BHP data
+                var_name = 'BHP'
+            elif obs_idx < 6:  # Default energy production
+                var_name = 'ENERGYRATE'
+            else:  # Default water production
+                var_name = 'WATRATRC'
+        
+        # Denormalize using variable name from config
+        if var_name in self.norm_params:
+            norm_params = self.norm_params[var_name]
+            if norm_params.get('type') == 'none':
+                return data  # No normalization was applied, return as-is
+            elif norm_params.get('type') == 'log':
+                # Reverse log normalization
+                log_min = norm_params['log_min']
+                log_max = norm_params['log_max']
+                log_data = data * (log_max - log_min) + log_min
+                epsilon = norm_params.get('epsilon', 1e-8)
+                data_shift = norm_params.get('data_shift', 0)
+                return np.exp(log_data) - epsilon + data_shift
+            else:
+                # Standard min-max denormalization
+                obs_min = norm_params['min']
+                obs_max = norm_params['max']
+                return data * (obs_max - obs_min) + obs_min
+        
+        # If variable not found in norm_params, return data as-is
+        return data
             
         return data  # Fallback: return data as-is if no normalization params found
     
@@ -1106,7 +1264,13 @@ class InteractiveVisualizationDashboard:
                     for case_idx in range(channel_data.shape[0]):
                         for timestep_idx in range(channel_data.shape[1]):
                             field_data = channel_data[case_idx, timestep_idx, :, :, :]
-                            denormalized_field = self._denormalize_field_data(field_data, field_key)
+                            # For batch denormalization, we need to denormalize each layer separately
+                            # field_data shape is (Nx, Ny, Nz), so iterate over layers
+                            denormalized_field = np.zeros_like(field_data)
+                            for layer_idx in range(field_data.shape[2]):
+                                layer_slice = field_data[:, :, layer_idx]
+                                denormalized_layer = self._denormalize_field_data(layer_slice, field_key, layer_idx=layer_idx)
+                                denormalized_field[:, :, layer_idx] = denormalized_layer
                             denormalized_data[case_idx, timestep_idx, :, :, :] = denormalized_field
                     
                     # Create full array for all cases (fill non-predicted with zeros)
@@ -1134,92 +1298,59 @@ class InteractiveVisualizationDashboard:
                 # Save observation predictions
                 print(f"\n📈 Saving observation predictions...")
                 
-                # BHP observations (indices 0-2)
-                if 'BHP' in self.norm_params:
-                    bhp_pred = self.yobs_pred[:, :, 0:3].cpu().detach().numpy()  # (num_case, num_tstep, 3)
-                    
-                    # Denormalize
-                    denormalized_bhp = np.zeros_like(bhp_pred)
-                    for case_idx in range(bhp_pred.shape[0]):
-                        for timestep_idx in range(bhp_pred.shape[1]):
-                            for well_idx in range(3):
-                                obs_data = bhp_pred[case_idx, timestep_idx, well_idx]
-                                denormalized_obs = self._denormalize_obs_data(obs_data, well_idx)
-                                denormalized_bhp[case_idx, timestep_idx, well_idx] = denormalized_obs
-                    
-                    # Create full array
-                    full_bhp = np.zeros((total_cases, num_timesteps_original, 3), dtype=denormalized_bhp.dtype)
-                    test_indices = np.array(self.test_case_indices)
-                    num_pred_timesteps = min(denormalized_bhp.shape[1], num_timesteps_original)
-                    # Use advanced indexing to place data correctly
-                    for i, case_idx in enumerate(test_indices):
-                        full_bhp[case_idx, :num_pred_timesteps, :] = denormalized_bhp[i, :num_pred_timesteps, :]
-                    
-                    # Save BHP
-                    output_filename = f"batch_timeseries_data_BHP_predicted.h5"
-                    output_path = os.path.join(output_dir, output_filename)
-                    with h5py.File(output_path, 'w') as hf:
-                        hf.create_dataset('data', data=full_bhp)
-                    saved_files.append(output_filename)
-                    print(f"  ✅ Saved {output_filename} (shape: {full_bhp.shape})")
+                # Get observation variable definitions from config or use defaults
+                obs_vars_to_save = {}
+                if hasattr(self, 'obs_indices_map') and self.obs_indices_map:
+                    # Use config-based mapping
+                    for var_name, indices in self.obs_indices_map.items():
+                        if var_name in self.norm_params:
+                            obs_vars_to_save[var_name] = indices
+                else:
+                    # Fallback to default hard-coded mapping
+                    if 'BHP' in self.norm_params:
+                        obs_vars_to_save['BHP'] = [0, 1, 2]
+                    if 'ENERGYRATE' in self.norm_params:
+                        obs_vars_to_save['ENERGYRATE'] = [3, 4, 5]
+                    if 'WATRATRC' in self.norm_params:
+                        obs_vars_to_save['WATRATRC'] = [6, 7, 8]
                 
-                # ENERGYRATE observations (indices 3-5)
-                if 'ENERGYRATE' in self.norm_params:
-                    energy_pred = self.yobs_pred[:, :, 3:6].cpu().detach().numpy()  # (num_case, num_tstep, 3)
+                # Save each observation variable type
+                for var_name, indices in obs_vars_to_save.items():
+                    if not indices:
+                        continue
+                    
+                    start_idx = min(indices)
+                    end_idx = max(indices) + 1
+                    num_wells = len(indices)
+                    
+                    # Extract predictions for this observation type
+                    obs_pred = self.yobs_pred[:, :, start_idx:end_idx].cpu().detach().numpy()  # (num_case, num_tstep, num_wells)
                     
                     # Denormalize
-                    denormalized_energy = np.zeros_like(energy_pred)
-                    for case_idx in range(energy_pred.shape[0]):
-                        for timestep_idx in range(energy_pred.shape[1]):
-                            for well_idx in range(3):
-                                obs_data = energy_pred[case_idx, timestep_idx, well_idx]
-                                denormalized_obs = self._denormalize_obs_data(obs_data, 3 + well_idx)
-                                denormalized_energy[case_idx, timestep_idx, well_idx] = denormalized_obs
+                    denormalized_obs = np.zeros_like(obs_pred)
+                    for case_idx in range(obs_pred.shape[0]):
+                        for timestep_idx in range(obs_pred.shape[1]):
+                            for well_idx in range(num_wells):
+                                obs_data = obs_pred[case_idx, timestep_idx, well_idx]
+                                obs_index = indices[well_idx]
+                                denormalized_obs_data = self._denormalize_obs_data(obs_data, obs_index)
+                                denormalized_obs[case_idx, timestep_idx, well_idx] = denormalized_obs_data
                     
                     # Create full array
-                    full_energy = np.zeros((total_cases, num_timesteps_original, 3), dtype=denormalized_energy.dtype)
+                    full_obs = np.zeros((total_cases, num_timesteps_original, num_wells), dtype=denormalized_obs.dtype)
                     test_indices = np.array(self.test_case_indices)
-                    num_pred_timesteps = min(denormalized_energy.shape[1], num_timesteps_original)
+                    num_pred_timesteps = min(denormalized_obs.shape[1], num_timesteps_original)
                     # Use advanced indexing to place data correctly
                     for i, case_idx in enumerate(test_indices):
-                        full_energy[case_idx, :num_pred_timesteps, :] = denormalized_energy[i, :num_pred_timesteps, :]
+                        full_obs[case_idx, :num_pred_timesteps, :] = denormalized_obs[i, :num_pred_timesteps, :]
                     
-                    # Save ENERGYRATE
-                    output_filename = f"batch_timeseries_data_ENERGYRATE_predicted.h5"
+                    # Save observation variable
+                    output_filename = f"batch_timeseries_data_{var_name}_predicted.h5"
                     output_path = os.path.join(output_dir, output_filename)
                     with h5py.File(output_path, 'w') as hf:
-                        hf.create_dataset('data', data=full_energy)
+                        hf.create_dataset('data', data=full_obs)
                     saved_files.append(output_filename)
-                    print(f"  ✅ Saved {output_filename} (shape: {full_energy.shape})")
-                
-                # WATRATRC observations (indices 6-8)
-                if 'WATRATRC' in self.norm_params:
-                    wat_pred = self.yobs_pred[:, :, 6:9].cpu().detach().numpy()  # (num_case, num_tstep, 3)
-                    
-                    # Denormalize
-                    denormalized_wat = np.zeros_like(wat_pred)
-                    for case_idx in range(wat_pred.shape[0]):
-                        for timestep_idx in range(wat_pred.shape[1]):
-                            for well_idx in range(3):
-                                obs_data = wat_pred[case_idx, timestep_idx, well_idx]
-                                denormalized_obs = self._denormalize_obs_data(obs_data, 6 + well_idx)
-                                denormalized_wat[case_idx, timestep_idx, well_idx] = denormalized_obs
-                    
-                    # Create full array
-                    full_wat = np.zeros((total_cases, num_timesteps_original, 3), dtype=denormalized_wat.dtype)
-                    test_indices = np.array(self.test_case_indices)
-                    num_pred_timesteps = min(denormalized_wat.shape[1], num_timesteps_original)
-                    # Use advanced indexing to place data correctly
-                    for i, case_idx in enumerate(test_indices):
-                        full_wat[case_idx, :num_pred_timesteps, :] = denormalized_wat[i, :num_pred_timesteps, :]
-                    
-                    # Save WATRATRC
-                    output_filename = f"batch_timeseries_data_WATRATRC_predicted.h5"
-                    output_path = os.path.join(output_dir, output_filename)
-                    with h5py.File(output_path, 'w') as hf:
-                        hf.create_dataset('data', data=full_wat)
-                    saved_files.append(output_filename)
-                    print(f"  ✅ Saved {output_filename} (shape: {full_wat.shape})")
+                    print(f"  ✅ Saved {output_filename} (shape: {full_obs.shape})")
                 
                 # Success message
                 print(f"\n✅ Successfully saved {len(saved_files)} files to {output_dir}")
@@ -1252,31 +1383,88 @@ class InteractiveVisualizationDashboard:
             actual_year = self.all_years[timestep_idx]  # Corresponding year
             
             # CRITICAL: field_idx must match channel_idx in state_pred[:, :, channel_idx, ...]
-            # field_key is used for normalization parameter lookup
-            if field_idx < len(self.field_keys):
-                field_key = self.field_keys[field_idx]
-            else:
-                # Fallback: use channel name if field_keys not available
-                if field_idx < len(self.channel_names):
-                    field_key = self.channel_names[field_idx].upper()
-                else:
-                    field_key = f'FIELD_{field_idx}'
+            # Validate that field_idx is within valid range
+            if field_idx >= len(self.channel_names):
+                raise ValueError(f"field_idx ({field_idx}) >= len(channel_names) ({len(self.channel_names)})!")
             
-            # DIAGNOSTIC: Print channel mapping for this field (only print once per field change)
+            # Verify field_idx maps to correct channel name
             if field_idx < len(self.channel_names):
-                actual_channel_name = self.channel_names[field_idx]
-                if not hasattr(self, '_last_field_idx') or self._last_field_idx != field_idx:
-                    print(f"\n🔍 Field Index {field_idx}:")
-                    print(f"   Channel name in tensor: '{actual_channel_name}'")
-                    print(f"   Field key (for normalization): '{field_key}'")
-                    print(f"   Display name: '{self.field_names[field_idx]}'")
-                    print(f"   ⚠️ CRITICAL: state_pred[:, :, {field_idx}, ...] should contain '{actual_channel_name}'")
-                    print(f"   Normalization params available: {field_key in self.norm_params if hasattr(self, 'norm_params') else 'N/A'}")
-                    self._last_field_idx = field_idx
+                expected_channel_name = self.channel_names[field_idx]
+                if field_idx < len(self.field_names):
+                    expected_field_name = self.field_names[field_idx]
+                else:
+                    expected_field_name = f"Field {field_idx}"
+            else:
+                raise ValueError(f"field_idx ({field_idx}) out of range for channel_names (length: {len(self.channel_names)})!")
             
-            # Diagnostic mode: enable for PERMI field or when issues detected
-            # Enable debug for PERMI field to help diagnose layer/residual issues
-            debug_mode = (field_key == 'PERMI') or (field_key == 'TEMP')  # Also debug TEMP since it has issues
+            # CRITICAL: field_key must match the normalization parameter key exactly
+            # Use channel_names[field_idx] to ensure correct mapping
+            if field_idx < len(self.channel_names):
+                channel_name = self.channel_names[field_idx]
+                # Use the channel name directly (uppercase) for normalization lookup
+                field_key = channel_name.upper()
+                
+                # CRITICAL VALIDATION: Verify field_key exists in norm_params
+                if field_key not in self.norm_params:
+                    # Try alternative key names (handle variations like PERMI vs PERM, VPOROSGEO vs VPOROSTGEO)
+                    alternative_keys = []
+                    if field_key == 'PERMI':
+                        alternative_keys = ['PERM', 'PERMEABILITY']
+                    elif field_key == 'PERM':
+                        alternative_keys = ['PERMI', 'PERMEABILITY']
+                    elif field_key == 'VPOROSGEO':
+                        alternative_keys = ['VPOROSTGEO', 'VPOROS', 'POROSITY']
+                    elif field_key == 'VPOROSTGEO':
+                        alternative_keys = ['VPOROSGEO', 'VPOROS', 'POROSITY']
+                    elif field_key == 'TEMP':
+                        alternative_keys = ['TEMPERATURE']
+                    elif field_key == 'TEMPERATURE':
+                        alternative_keys = ['TEMP']
+                    
+                    # Try alternative keys
+                    found_key = None
+                    for alt_key in alternative_keys:
+                        if alt_key in self.norm_params:
+                            found_key = alt_key
+                            print(f"⚠️ WARNING: Using alternative normalization key '{alt_key}' for channel '{channel_name}' (field_key='{field_key}' not found)")
+                            break
+                    
+                    if found_key:
+                        field_key = found_key
+                    else:
+                        # No alternative key found, raise error
+                        available_keys = list(self.norm_params.keys())
+                        raise ValueError(f"CRITICAL ERROR: Normalization key '{field_key}' for channel '{channel_name}' (field_idx={field_idx}) not found in norm_params! Available keys: {available_keys}")
+            else:
+                raise ValueError(f"field_idx ({field_idx}) >= len(channel_names) ({len(self.channel_names)})!")
+            
+            # CRITICAL VALIDATION: Verify field_idx correctly maps to channel
+            # field_idx should directly correspond to channel index in tensors
+            # state_pred shape: (num_case, num_tstep, n_channels, Nx, Ny, Nz)
+            # state_seq_true_aligned shape: (num_case, n_channels, num_tstep, Nx, Ny, Nz)
+            # field_idx must be < n_channels and correspond to channel_names[field_idx]
+            if self.state_pred is not None and len(self.state_pred.shape) >= 3:
+                n_channels_pred = self.state_pred.shape[2]
+                if field_idx >= n_channels_pred:
+                    raise ValueError(f"field_idx ({field_idx}) >= state_pred channels ({n_channels_pred})!")
+            
+            if self.state_seq_true_aligned is not None and len(self.state_seq_true_aligned.shape) >= 2:
+                n_channels_true = self.state_seq_true_aligned.shape[1]
+                if field_idx >= n_channels_true:
+                    raise ValueError(f"field_idx ({field_idx}) >= state_seq_true_aligned channels ({n_channels_true})!")
+            
+            # Enable debug for PERMI and TEMP fields to help diagnose layer/residual issues
+            debug_mode = (field_key == 'PERMI') or (field_key == 'PERM') or (field_key == 'TEMP') or (field_key == 'TEMPERATURE')
+            
+            # CRITICAL: Log which normalization parameters are being used
+            if debug_mode:
+                print(f"\n🔍 Denormalization Debug for field_idx={field_idx}, channel_name='{expected_channel_name}', field_key='{field_key}':")
+                if field_key in self.norm_params:
+                    norm_type = self.norm_params[field_key].get('type', 'unknown')
+                    print(f"   ✅ Found normalization params for '{field_key}' (type: {norm_type})")
+                else:
+                    print(f"   ❌ ERROR: field_key '{field_key}' not found in norm_params!")
+                    print(f"   Available keys: {list(self.norm_params.keys())}")
             
             # Get layer mask (fix: use case_idx, not actual_case_idx)
             layer_mask = self._get_layer_mask(case_idx, actual_layer, debug=debug_mode)
@@ -1285,19 +1473,36 @@ class InteractiveVisualizationDashboard:
             pred_data = self.state_pred[case_idx, actual_timestep, field_idx, :, :, actual_layer].cpu().detach().numpy()
             true_data = self.state_seq_true_aligned[case_idx, field_idx, actual_timestep, :, :, actual_layer].cpu().numpy()
             
+            # CRITICAL VALIDATION: Log which channel is being accessed
             if debug_mode:
-                print(f"\n{'='*70}")
-                print(f"🔍 SPATIAL PLOT DIAGNOSTIC - {self.field_names[field_idx]} (Field Key: {field_key})")
-                print(f"{'='*70}")
-                print(f"Case: {case_idx} (actual: {actual_case_idx}), Layer: {actual_layer}, Timestep: {actual_timestep} (Year: {actual_year})")
-                print(f"Pred data shape: {pred_data.shape}, range: [{np.nanmin(pred_data):.6f}, {np.nanmax(pred_data):.6f}]")
-                print(f"True data shape: {true_data.shape}, range: [{np.nanmin(true_data):.6f}, {np.nanmax(true_data):.6f}]")
-                print(f"Pred NaN count: {np.sum(np.isnan(pred_data))}, Inf count: {np.sum(np.isinf(pred_data))}")
-                print(f"True NaN count: {np.sum(np.isnan(true_data))}, Inf count: {np.sum(np.isinf(true_data))}")
+                print(f"\n🔍 Data access validation:")
+                print(f"   field_idx={field_idx}, channel_name='{expected_channel_name}'")
+                print(f"   Accessing: state_seq_true_aligned[case_idx={case_idx}, channel_idx={field_idx}, timestep={actual_timestep}, ...]")
+                print(f"   True data raw range: [{np.nanmin(true_data):.6e}, {np.nanmax(true_data):.6e}]")
+                print(f"   Expected channel: {expected_channel_name}")
+                if field_idx < len(self.channel_names):
+                    print(f"   channel_names[{field_idx}] = '{self.channel_names[field_idx]}'")
+                    if self.channel_names[field_idx] != expected_channel_name:
+                        print(f"   ⚠️ WARNING: channel_names[{field_idx}] != expected_channel_name!")
+                print(f"   state_seq_true_aligned shape: {self.state_seq_true_aligned.shape}")
+                print(f"   Number of channels: {self.state_seq_true_aligned.shape[1]}")
             
-            # Denormalize
-            pred_data_denorm = self._denormalize_field_data(pred_data, field_key, debug=debug_mode)
-            true_data_denorm = self._denormalize_field_data(true_data, field_key, debug=debug_mode)
+            # Denormalize (pass layer_idx for per-layer normalization)
+            pred_data_denorm = self._denormalize_field_data(pred_data, field_key, layer_idx=actual_layer, debug=debug_mode)
+            if self.true_data_is_raw:
+                # True data already in raw units from .h5 files
+                true_data_denorm = true_data
+                if debug_mode:
+                    raw_min = float(np.nanmin(true_data_denorm))
+                    raw_max = float(np.nanmax(true_data_denorm))
+                    print(f"   True raw range: [{raw_min:.6e}, {raw_max:.6e}]")
+            else:
+                true_data_denorm = self._denormalize_field_data(true_data, field_key, layer_idx=actual_layer, debug=debug_mode)
+
+            # Optional log transform for permeability-like fields (visualization only)
+            pred_data_denorm, true_data_denorm, label_prefix = self._maybe_log_transform_spatial(
+                field_key, pred_data_denorm, true_data_denorm
+            )
             
             if debug_mode:
                 print(f"\nAfter denormalization:")
@@ -1343,13 +1548,32 @@ class InteractiveVisualizationDashboard:
                     print(f"   ⚠️ WARNING: NO VALID TRUE DATA AFTER MASKING!")
             
             # Calculate RESIDUAL (difference between predicted and true)
+            # For permeability fields with very small values, use relative residuals (percentage error)
+            # For other fields, use absolute residuals
+            perm_keys = {'PERMI', 'PERM', 'PERMJ', 'PERMK'}
+            use_relative_residual = (field_key in perm_keys)
+            
             # Residual: pred - true (positive = overprediction, negative = underprediction)
             # Only calculate residual where both pred and true are valid (not NaN/Inf)
             # This prevents NaN propagation from denormalization issues
             valid_for_residual = ~(np.isnan(pred_data_denorm) | np.isnan(true_data_denorm) | 
                                   np.isinf(pred_data_denorm) | np.isinf(true_data_denorm))
             residual = np.full_like(pred_data_denorm, np.nan)  # Initialize with NaN
-            residual[valid_for_residual] = pred_data_denorm[valid_for_residual] - true_data_denorm[valid_for_residual]
+            
+            if use_relative_residual:
+                # Calculate relative residual (percentage error) for permeability
+                # relative_residual = (pred - true) / true * 100
+                # This makes differences visible even for very small values
+                valid_pred = pred_data_denorm[valid_for_residual]
+                valid_true = true_data_denorm[valid_for_residual]
+                # Avoid division by zero - use epsilon for very small true values
+                epsilon = 1e-18
+                valid_true_safe = np.where(np.abs(valid_true) < epsilon, epsilon, valid_true)
+                relative_residual = (valid_pred - valid_true) / valid_true_safe * 100.0
+                residual[valid_for_residual] = relative_residual
+            else:
+                # Absolute residual for other fields
+                residual[valid_for_residual] = pred_data_denorm[valid_for_residual] - true_data_denorm[valid_for_residual]
             
             if debug_mode:
                 print(f"\nResidual calculation:")
@@ -1413,19 +1637,9 @@ class InteractiveVisualizationDashboard:
                 # Use percentile-based scaling for symmetric range around zero
                 abs_max = max(np.abs(np.percentile(valid_residual_data, [2, 98])))
                 residual_vmax = max(abs_max, np.abs(valid_residual_data).max() * 0.95, 0.01)
-                residual_vmin = -residual_vmax  # Symmetric around zero
-                
-                if debug_mode:
-                    print(f"🔍 Residual Color Scaling:")
-                    print(f"   Valid residual data points: {len(valid_residual_data)}")
-                    print(f"   Residual range: [{np.min(valid_residual_data):.6f}, {np.max(valid_residual_data):.6f}]")
-                    print(f"   Color range: [{residual_vmin:.6f}, {residual_vmax:.6f}]")
+                residual_vmin = -residual_vmax
             else:
                 residual_vmin, residual_vmax = -1.0, 1.0
-                if debug_mode:
-                    print(f"🔍 Residual Color Scaling:")
-                    print(f"   ⚠️ WARNING: No valid residual data! Using default range: [{residual_vmin}, {residual_vmax}]")
-                    print(f"   This will result in an empty residual plot.")
             
             # Create high-resolution plot with modern styling
             plt.style.use('default')  # Clean style
@@ -1459,7 +1673,9 @@ class InteractiveVisualizationDashboard:
                 # Create dummy image for colorbar (won't be visible but prevents errors)
                 im1 = axes[0].imshow(np.zeros((self.Nx, self.Ny)), cmap=cmap, vmin=0, vmax=1, alpha=0)
             
-            axes[0].set_title('Predicted', fontsize=16, fontweight='bold', pad=15)
+            # Add min/max to title for clarity (helps confirm correct units)
+            pred_title = f"Predicted (min={np.nanmin(pred_data_denorm):.3e}, max={np.nanmax(pred_data_denorm):.3e})"
+            axes[0].set_title(pred_title, fontsize=16, fontweight='bold', pad=15)
             axes[0].set_xlabel('I Index', fontsize=14, fontweight='bold')
             axes[0].set_ylabel('J Index', fontsize=14, fontweight='bold')
             axes[0].tick_params(labelsize=12, width=1.5)
@@ -1471,7 +1687,7 @@ class InteractiveVisualizationDashboard:
             
             # Enhanced colorbar - exact height match with plot area
             cbar1 = plt.colorbar(im1, ax=axes[0], shrink=0.7, aspect=30, pad=0.02)
-            cbar1.set_label(f'{self.field_names[field_idx]}', 
+            cbar1.set_label(f'{label_prefix}{self.field_names[field_idx]}', 
                            rotation=90, labelpad=15, fontsize=14, fontweight='bold')
             cbar1.ax.tick_params(labelsize=12, width=1.5)
             # Make colorbar tick labels bold
@@ -1498,7 +1714,8 @@ class InteractiveVisualizationDashboard:
                 # Create dummy image for colorbar (won't be visible but prevents errors)
                 im2 = axes[1].imshow(np.zeros((self.Nx, self.Ny)), cmap=cmap, vmin=0, vmax=1, alpha=0)
             
-            axes[1].set_title('True', fontsize=16, fontweight='bold', pad=15)
+            true_title = f"True (min={np.nanmin(true_data_denorm):.3e}, max={np.nanmax(true_data_denorm):.3e})"
+            axes[1].set_title(true_title, fontsize=16, fontweight='bold', pad=15)
             axes[1].set_xlabel('I Index', fontsize=14, fontweight='bold')
             axes[1].set_ylabel('J Index', fontsize=14, fontweight='bold')
             axes[1].tick_params(labelsize=12, width=1.5)
@@ -1510,7 +1727,7 @@ class InteractiveVisualizationDashboard:
             
             # Enhanced colorbar - exact height match with plot area
             cbar2 = plt.colorbar(im2, ax=axes[1], shrink=0.7, aspect=30, pad=0.02)
-            cbar2.set_label(f'{self.field_names[field_idx]}', 
+            cbar2.set_label(f'{label_prefix}{self.field_names[field_idx]}', 
                            rotation=90, labelpad=15, fontsize=14, fontweight='bold')
             cbar2.ax.tick_params(labelsize=12, width=1.5)
             # Make colorbar tick labels bold
@@ -1538,7 +1755,12 @@ class InteractiveVisualizationDashboard:
                 
                 # Enhanced colorbar for residual - exact height match with plot area
                 cbar3 = plt.colorbar(im3, ax=axes[2], shrink=0.7, aspect=30, pad=0.02)
-                cbar3.set_label(f'Residual (Pred - True)', 
+                # Use appropriate label based on residual type
+                if use_relative_residual:
+                    residual_label = f'Relative Residual (Pred - True) / True × 100%'
+                else:
+                    residual_label = f'Residual (Pred - True)'
+                cbar3.set_label(residual_label, 
                                rotation=90, labelpad=15, fontsize=14, fontweight='bold')
                 cbar3.ax.tick_params(labelsize=12, width=1.5)
                 # Make colorbar tick labels bold
@@ -1588,7 +1810,7 @@ class InteractiveVisualizationDashboard:
             self._add_well_overlays(axes, actual_layer)
             
             # Final layout optimization with minimal spacing
-            plt.tight_layout()
+            _safe_tight_layout()
             plt.subplots_adjust(top=0.96, bottom=0.04, hspace=0.08)  # Minimal vertical spacing for compact layout
             
             # Add external legend beneath the plot
@@ -1676,21 +1898,20 @@ class InteractiveVisualizationDashboard:
             ax.plot(years_ts, true_data_denorm, 'b-', label='Ground Truth', linewidth=3, alpha=0.9)
             
             if self.comparison_mode_enabled and self.predictions_generated:
-                # COMPARISON MODE: Show both prediction methods
+                # COMPARISON MODE: Show both prediction methods (if enabled)
                 
-                # State-based predictions
-                state_pred_data = self.yobs_pred_state_based[case_idx, :self.num_tstep, obs_idx].cpu().detach().numpy()
-                state_pred_denorm = self._denormalize_obs_data(state_pred_data, obs_idx)
-                state_pred_denorm = np.maximum(state_pred_denorm, 0.0)
-                
-                # Latent-based predictions
+                # Latent-based predictions (always show in comparison mode)
                 latent_pred_data = self.yobs_pred_latent_based[case_idx, :self.num_tstep, obs_idx].cpu().detach().numpy()
                 latent_pred_denorm = self._denormalize_obs_data(latent_pred_data, obs_idx)
                 latent_pred_denorm = np.maximum(latent_pred_denorm, 0.0)
-                
-                # Plot both prediction methods
-                ax.plot(years_ts, state_pred_denorm, 'g--', label='State-based Prediction', linewidth=2, alpha=0.8)
                 ax.plot(years_ts, latent_pred_denorm, 'm:', label='Latent-based Prediction', linewidth=2, alpha=0.8)
+                
+                # State-based predictions (only if checkbox is enabled)
+                if self.show_state_based_checkbox.value:
+                    state_pred_data = self.yobs_pred_state_based[case_idx, :self.num_tstep, obs_idx].cpu().detach().numpy()
+                    state_pred_denorm = self._denormalize_obs_data(state_pred_data, obs_idx)
+                    state_pred_denorm = np.maximum(state_pred_denorm, 0.0)
+                    ax.plot(years_ts, state_pred_denorm, 'g--', label='State-based Prediction', linewidth=2, alpha=0.8)
                 
                 title_suffix = " - Comparison Mode"
                 
@@ -1721,7 +1942,7 @@ class InteractiveVisualizationDashboard:
             for label in ax.get_yticklabels():
                 label.set_fontweight('bold')
             
-            plt.tight_layout()
+            _safe_tight_layout()
             
             # Display in widget context
             display(fig)
@@ -1753,7 +1974,7 @@ class InteractiveVisualizationDashboard:
                 ax=ax, norm_params=self.norm_params, dashboard=self
             )
             
-            plt.tight_layout()
+            _safe_tight_layout()
             
             # Display in widget context
             display(fig)
@@ -1773,14 +1994,26 @@ class InteractiveVisualizationDashboard:
             case_idx = self.timeseries_case_slider.value
             obs_idx = self.timeseries_obs_dropdown.value
             
+            # Determine which prediction source to use for metrics
+            # Use latent-based predictions if:
+            # 1. Comparison mode is enabled
+            # 2. State-based checkbox is unchecked
+            # 3. Latent-based predictions are available
+            yobs_pred_override = None
+            if (self.comparison_mode_enabled and 
+                not self.show_state_based_checkbox.value and 
+                self.yobs_pred_latent_based is not None):
+                yobs_pred_override = self.yobs_pred_latent_based
+            
             # Create figure for metrics
             fig, ax = plt.subplots(figsize=(10, 5))
             self.metrics_evaluator.plot_timeseries_metrics(
                 case_idx, obs_idx, 
-                ax=ax, norm_params=self.norm_params
+                ax=ax, norm_params=self.norm_params,
+                yobs_pred_override=yobs_pred_override
             )
             
-            plt.tight_layout()
+            _safe_tight_layout()
             
             # Display in widget context
             display(fig)
@@ -1855,7 +2088,12 @@ class InteractiveVisualizationDashboard:
         )
         
         # Timeseries graph dropdown (shared between training/testing)
-        timeseries_options = ['BHP (All Injectors)', 'Energy Production (All Producers)', 'Water Production (All Producers)']
+        # Load timeseries options from config or use defaults
+        if hasattr(self, 'obs_groups_map') and self.obs_groups_map:
+            timeseries_options = list(self.obs_groups_map.keys())
+        else:
+            # Fallback to default hard-coded options
+            timeseries_options = ['BHP (All Injectors)', 'Energy Production (All Producers)', 'Water Production (All Producers)']
         self.timeseries_graph_dropdown = widgets.Dropdown(
             options=timeseries_options,
             value=timeseries_options[0],
@@ -1935,17 +2173,26 @@ class InteractiveVisualizationDashboard:
         
         # Helper function to update well dropdown options based on selected group
         def update_well_dropdown_options(group_name):
-            obs_groups_map = {
-                'BHP (All Injectors)': (list(range(3)), ['BHP1', 'BHP2', 'BHP3']),
-                'Energy Production (All Producers)': (list(range(3, 6)), ['Energy Prod1', 'Energy Prod2', 'Energy Prod3']),
-                'Water Production (All Producers)': (list(range(6, 9)), ['Water Prod1', 'Water Prod2', 'Water Prod3'])
+            # Use config-based obs_groups_map if available, otherwise fallback to defaults
+            # Note: These fallback values are hard-coded defaults. Actual values should come from config.yaml data.observations.variables
+            obs_groups_map = self.obs_groups_map if hasattr(self, 'obs_groups_map') and self.obs_groups_map else {
+                'BHP (All Injectors)': (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'),  # Fallback: defined in config
+                'Energy Production (All Producers)': (list(range(3, 6)), ['Energy Prod1', 'Energy Prod2', 'Energy Prod3'], 'BTU/Day'),  # Fallback: defined in config
+                'Water Production (All Producers)': (list(range(6, 9)), ['Water Prod1', 'Water Prod2', 'Water Prod3'], 'bbl/day')  # Fallback: defined in config
             }
             
             if group_name in obs_groups_map:
-                obs_indices, well_names = obs_groups_map[group_name]
-                well_options = ['All Wells'] + well_names
-                self.timeseries_well_dropdown.options = well_options
-                self.timeseries_well_dropdown.value = 'All Wells'
+                group_data = obs_groups_map[group_name]
+                # Handle both old format (indices, well_names) and new format (indices, well_names, unit)
+                if len(group_data) >= 2:
+                    obs_indices = group_data[0]
+                    well_names = group_data[1]
+                    well_options = ['All Wells'] + well_names
+                    self.timeseries_well_dropdown.options = well_options
+                    self.timeseries_well_dropdown.value = 'All Wells'
+                else:
+                    self.timeseries_well_dropdown.options = ['All Wells']
+                    self.timeseries_well_dropdown.value = 'All Wells'
             else:
                 self.timeseries_well_dropdown.options = ['All Wells']
                 self.timeseries_well_dropdown.value = 'All Wells'
@@ -2318,12 +2565,19 @@ class InteractiveVisualizationDashboard:
             else:  # Timeseries
                 # Get selected timeseries group
                 selected_group_name = self.timeseries_graph_dropdown.value
-                obs_groups_map = {
+                # Use config-based obs_groups_map if available, otherwise fallback to defaults
+                obs_groups_map = self.obs_groups_map if hasattr(self, 'obs_groups_map') and self.obs_groups_map else {
                     'BHP (All Injectors)': (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'),
                     'Energy Production (All Producers)': (list(range(3, 6)), ['Energy Prod1', 'Energy Prod2', 'Energy Prod3'], 'BTU/Day'),
                     'Water Production (All Producers)': (list(range(6, 9)), ['Water Prod1', 'Water Prod2', 'Water Prod3'], 'bbl/day')
                 }
-                obs_indices, well_names, unit = obs_groups_map.get(selected_group_name, (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'))
+                group_data = obs_groups_map.get(selected_group_name, (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'))
+                # Handle both old and new format
+                if len(group_data) >= 3:
+                    obs_indices, well_names, unit = group_data[0], group_data[1], group_data[2]
+                else:
+                    obs_indices, well_names = group_data[0], group_data[1]
+                    unit = 'psi'  # Default unit
                 
                 # Get selected well (None if "All Wells")
                 selected_well = self.timeseries_well_dropdown.value
@@ -2463,12 +2717,19 @@ class InteractiveVisualizationDashboard:
             else:  # Timeseries
                 # Get selected timeseries group
                 selected_group_name = self.timeseries_graph_dropdown.value
-                obs_groups_map = {
+                # Use config-based obs_groups_map if available, otherwise fallback to defaults
+                obs_groups_map = self.obs_groups_map if hasattr(self, 'obs_groups_map') and self.obs_groups_map else {
                     'BHP (All Injectors)': (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'),
                     'Energy Production (All Producers)': (list(range(3, 6)), ['Energy Prod1', 'Energy Prod2', 'Energy Prod3'], 'BTU/Day'),
                     'Water Production (All Producers)': (list(range(6, 9)), ['Water Prod1', 'Water Prod2', 'Water Prod3'], 'bbl/day')
                 }
-                obs_indices, well_names, unit = obs_groups_map.get(selected_group_name, (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'))
+                group_data = obs_groups_map.get(selected_group_name, (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'))
+                # Handle both old and new format
+                if len(group_data) >= 3:
+                    obs_indices, well_names, unit = group_data[0], group_data[1], group_data[2]
+                else:
+                    obs_indices, well_names = group_data[0], group_data[1]
+                    unit = 'psi'  # Default unit
                 
                 # Get selected well (None if "All Wells")
                 selected_well = self.timeseries_well_dropdown.value
@@ -2608,7 +2869,7 @@ class InteractiveVisualizationDashboard:
             else:
                 selected_graph = selected_group_name
         
-        plt.tight_layout()
+        _safe_tight_layout()
         # Adjust spacing: top=0.82 gives more space for suptitle and plot titles, wspace=0.1 minimizes gap between plots
         # right=0.85 makes room for legend when color-coding is used
         plt.subplots_adjust(top=0.82, hspace=0.3, wspace=0.1, right=0.85)
@@ -2684,28 +2945,98 @@ class InteractiveVisualizationDashboard:
         if not enable:
             self.clear_metrics_cache()
     
-    def _batch_denormalize_spatial(self, data_flat, field_idx, norm_params):
+    def _batch_denormalize_spatial(self, data_flat, field_idx, norm_params, original_shape=None):
         """
         Batch denormalize spatial field data using vectorized operations.
+        Supports both per-layer and global normalization.
         
         Args:
             data_flat: Flattened array of normalized data
             field_idx: Field/channel index
             norm_params: Normalization parameters dictionary
+            original_shape: Original shape before flattening (required for per-layer normalization)
+                           Format: (n_cases, n_tstep, Nx, Ny, Nz) or similar
             
         Returns:
-            Denormalized data array
+            Denormalized data array (flattened)
         """
-        if not norm_params or field_idx >= len(self.field_names):
+        if not norm_params or field_idx >= len(self.channel_names):
             return data_flat
         
-        field_key = self.field_keys[field_idx] if hasattr(self, 'field_keys') and field_idx < len(self.field_keys) else self.field_names[field_idx].upper()
+        # CRITICAL: Use channel_names[field_idx] to get the correct field_key
+        # This ensures we use the same normalization parameters as in _update_spatial_plot
+        if field_idx < len(self.channel_names):
+            channel_name = self.channel_names[field_idx]
+            field_key = channel_name.upper()
+            
+            # Try alternative keys if exact match not found (same logic as _update_spatial_plot)
+            if field_key not in norm_params:
+                alternative_keys = []
+                if field_key == 'PERMI':
+                    alternative_keys = ['PERM', 'PERMEABILITY']
+                elif field_key == 'PERM':
+                    alternative_keys = ['PERMI', 'PERMEABILITY']
+                elif field_key == 'VPOROSGEO':
+                    alternative_keys = ['VPOROSTGEO', 'VPOROS', 'POROSITY']
+                elif field_key == 'VPOROSTGEO':
+                    alternative_keys = ['VPOROSGEO', 'VPOROS', 'POROSITY']
+                elif field_key == 'TEMP':
+                    alternative_keys = ['TEMPERATURE']
+                elif field_key == 'TEMPERATURE':
+                    alternative_keys = ['TEMP']
+                
+                for alt_key in alternative_keys:
+                    if alt_key in norm_params:
+                        field_key = alt_key
+                        break
+        else:
+            # Fallback to old method if channel_names not available
+            field_key = self.field_keys[field_idx] if hasattr(self, 'field_keys') and field_idx < len(self.field_keys) else f'FIELD_{field_idx}'
         
         if field_key not in norm_params:
             return data_flat
         
         params = norm_params[field_key]
         
+        # Check if per-layer normalization was used
+        if params.get('per_layer', False) and original_shape is not None:
+            # Per-layer denormalization: reshape, denormalize layer by layer, then flatten
+            try:
+                data_reshaped = data_flat.reshape(original_shape)
+                denormalized = np.zeros_like(data_reshaped)
+                
+                # Nz is the last dimension in original_shape
+                Nz = original_shape[-1]
+                
+                # Validate that we have parameters for all layers
+                layers_dict = params.get('layers', {})
+                if len(layers_dict) != Nz:
+                    print(f"⚠️ Warning: Number of layer parameters ({len(layers_dict)}) != number of layers ({Nz}) for {field_key}")
+                    print(f"   Falling back to global normalization")
+                    # Fall through to global normalization
+                else:
+                    # Denormalize each layer separately
+                    for layer_idx in range(Nz):
+                        # Extract layer slice: all dimensions except last
+                        layer_slice = data_reshaped[..., layer_idx]
+                        # Denormalize this layer using layer-specific parameters
+                        denormalized[..., layer_idx] = self._denormalize_field_data(
+                            layer_slice, field_key, layer_idx=layer_idx, debug=False
+                        )
+                    
+                    return denormalized.flatten()
+            except Exception as e:
+                print(f"⚠️ Warning: Error in per-layer batch denormalization for {field_key}: {e}")
+                import traceback
+                traceback.print_exc()
+                print(f"   Falling back to global normalization")
+                # Fall through to global normalization
+        elif params.get('per_layer', False) and original_shape is None:
+            print(f"⚠️ Warning: Per-layer normalization detected for {field_key} but original_shape not provided")
+            print(f"   Cannot perform per-layer denormalization, falling back to global normalization")
+            # Fall through to global normalization
+        
+        # Global normalization (backward compatibility)
         if params.get('type') == 'none':
             return data_flat
         elif params.get('type') == 'log':
@@ -2973,14 +3304,17 @@ class InteractiveVisualizationDashboard:
                             averaged_metrics[metric_name.lower()] = 0.0
                     
                     # For plotting, we still need aggregated data (use aggregated approach for data)
+                    # Save original shape BEFORE flattening for per-layer denormalization support
+                    original_shape = pred_field.shape
                     # First, denormalize the field data (same as aggregated mode)
                     pred_flat_all = pred_field.flatten()
                     true_flat_all = true_field.flatten()
                     
                     # Batch denormalize using helper method (vectorized) - do this once for all layers
                     if self.norm_params and field_idx_iter < len(self.field_names):
-                        pred_flat_all = self._batch_denormalize_spatial(pred_flat_all, field_idx_iter, self.norm_params)
-                        true_flat_all = self._batch_denormalize_spatial(true_flat_all, field_idx_iter, self.norm_params)
+                        pred_flat_all = self._batch_denormalize_spatial(pred_flat_all, field_idx_iter, self.norm_params, original_shape=original_shape)
+                        if not self.true_data_is_raw:
+                            true_flat_all = self._batch_denormalize_spatial(true_flat_all, field_idx_iter, self.norm_params, original_shape=original_shape)
                     
                     # Reshape back to original shape after denormalization
                     pred_field_denorm = pred_flat_all.reshape(pred_field.shape)
@@ -3025,14 +3359,17 @@ class InteractiveVisualizationDashboard:
                     continue  # Skip the aggregated calculation below
             
             # Batch denormalize the entire field once (before layer processing for efficiency)
+            # Save original shape BEFORE flattening for per-layer denormalization support
+            original_shape = pred_field.shape
             # Reshape to (n_cases * n_tstep * Nx * Ny * Nz,)
             pred_flat_all = pred_field.flatten()
             true_flat_all = true_field.flatten()
             
             # Batch denormalize using helper method (vectorized) - do this once for all layers
             if self.norm_params and field_idx_iter < len(self.field_names):
-                pred_flat_all = self._batch_denormalize_spatial(pred_flat_all, field_idx_iter, self.norm_params)
-                true_flat_all = self._batch_denormalize_spatial(true_flat_all, field_idx_iter, self.norm_params)
+                pred_flat_all = self._batch_denormalize_spatial(pred_flat_all, field_idx_iter, self.norm_params, original_shape=original_shape)
+                if not self.true_data_is_raw:
+                    true_flat_all = self._batch_denormalize_spatial(true_flat_all, field_idx_iter, self.norm_params, original_shape=original_shape)
             
             # Reshape back to original shape after denormalization
             pred_field_denorm = pred_flat_all.reshape(pred_field.shape)
@@ -4086,7 +4423,9 @@ class InteractiveVisualizationDashboard:
             self.timeseries_obs_dropdown,
             widgets.HTML("<br>"),
             self.comparison_mode_checkbox,
-            widgets.HTML("<p><i><b>Comparison Mode:</b> When enabled, plots will show both state-based and latent-based predictions against ground truth for direct comparison.</i></p>")
+            self.show_state_based_checkbox,
+            widgets.HTML("<p><i><b>Comparison Mode:</b> When enabled, plots will show both state-based and latent-based predictions against ground truth for direct comparison.</i></p>"),
+            widgets.HTML("<p><i><b>Show State-based:</b> Toggle visibility of state-based predictions (can be hidden if showing poor results).</i></p>")
         ])
         
         timeseries_tab = widgets.VBox([
@@ -4141,6 +4480,10 @@ class InteractiveVisualizationDashboard:
         
         def animate():
             """Animation loop with GIF creation"""
+            # Set matplotlib to non-interactive backend to prevent display
+            import matplotlib
+            matplotlib.use('Agg')  # Use non-interactive backend
+            
             gif_frames = []  # Store frames for GIF creation
             
             try:
@@ -4167,28 +4510,26 @@ class InteractiveVisualizationDashboard:
                     current_year = self.start_year + timestep_idx
                     self.animation_status.value = f'Animation Status: Playing (Year {current_year}, Step {timestep_idx+1}/{self.num_tstep}) - Creating GIF...'
                     
-                    # Create frame and capture for GIF
-                    with self.animation_output:
-                        clear_output(wait=True)
-                        
-                        # Create the plot
-                        fig = self._create_animation_frame_with_capture(case_idx, layer_idx, field_idx, timestep_idx)
-                        
-                        # Display the plot
-                        display(fig)
-                        
-                        # Capture frame for GIF
-                        buf = io.BytesIO()
-                        fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-                        buf.seek(0)
-                        gif_frames.append(Image.open(buf))
-                        
-                        # Close the figure to prevent memory issues
-                        try:
-                            plt.close(fig)
-                        except (AttributeError, RuntimeError):
-                            # If closing fails (e.g., manager is None), just continue
-                            pass
+                    # Create frame and capture for GIF (without displaying in console)
+                    # Create the plot without displaying it
+                    fig = self._create_animation_frame_with_capture(case_idx, layer_idx, field_idx, timestep_idx)
+                    
+                    # Capture frame for GIF (without displaying)
+                    buf = io.BytesIO()
+                    fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+                    buf.seek(0)
+                    # Load image immediately so it doesn't depend on the buffer
+                    img = Image.open(buf)
+                    img.load()  # Force load the image data into memory
+                    gif_frames.append(img)
+                    buf.close()  # Now safe to close the buffer
+                    
+                    # Close the figure to prevent memory issues
+                    try:
+                        plt.close(fig)
+                    except (AttributeError, RuntimeError):
+                        # If closing fails (e.g., manager is None), just continue
+                        pass
                     
                     # Wait for next frame
                     time.sleep(speed)
@@ -4197,17 +4538,23 @@ class InteractiveVisualizationDashboard:
                 if self.animation_running and len(gif_frames) > 0:
                     self.animation_status.value = 'Animation Status: Saving GIF...'
                     
-                    # Create GIF with proper duration
-                    gif_frames[0].save(
-                        gif_filename,
-                        save_all=True,
-                        append_images=gif_frames[1:],
-                        duration=int(speed * 1000),  # Convert to milliseconds
-                        loop=0  # Infinite loop
-                    )
-                    
-                    self.animation_status.value = f'Animation Status: Completed - GIF saved: {gif_filename.name}'
-                    print(f"🎬 Animation GIF saved: {gif_filename}")
+                    try:
+                        # Create GIF with proper duration
+                        gif_frames[0].save(
+                            str(gif_filename),  # Ensure string path
+                            save_all=True,
+                            append_images=gif_frames[1:],
+                            duration=int(speed * 1000),  # Convert to milliseconds
+                            loop=0  # Infinite loop
+                        )
+                        
+                        self.animation_status.value = f'Animation Status: Completed - GIF saved: {gif_filename.name}'
+                        print(f"🎬 Animation GIF saved: {gif_filename}")
+                    except Exception as gif_error:
+                        self.animation_status.value = f'Animation Status: Error saving GIF - {str(gif_error)}'
+                        print(f"❌ Error saving GIF: {gif_error}")
+                        import traceback
+                        traceback.print_exc()
                 else:
                     if len(gif_frames) == 0:
                         self.animation_status.value = 'Animation Status: Stopped - No frames captured'
@@ -4263,9 +4610,17 @@ class InteractiveVisualizationDashboard:
         pred_data = self.state_pred[case_idx, timestep_idx, field_idx, :, :, layer_idx].cpu().detach().numpy()
         true_data = self.state_seq_true_aligned[case_idx, field_idx, timestep_idx, :, :, layer_idx].cpu().numpy()
         
-        # Denormalize
-        pred_data_denorm = self._denormalize_field_data(pred_data, field_key)
-        true_data_denorm = self._denormalize_field_data(true_data, field_key)
+        # Denormalize (pass layer_idx for per-layer normalization)
+        pred_data_denorm = self._denormalize_field_data(pred_data, field_key, layer_idx=layer_idx)
+        if self.true_data_is_raw:
+            true_data_denorm = true_data
+        else:
+            true_data_denorm = self._denormalize_field_data(true_data, field_key, layer_idx=layer_idx)
+
+        # Optional log transform for permeability-like fields (visualization only)
+        pred_data_denorm, true_data_denorm, label_prefix = self._maybe_log_transform_spatial(
+            field_key, pred_data_denorm, true_data_denorm
+        )
         
         # Apply masking
         pred_data_masked = np.where(layer_mask, pred_data_denorm, np.nan)
@@ -4320,7 +4675,8 @@ class InteractiveVisualizationDashboard:
                            aspect='equal',  # Equal aspect ratio
                            interpolation='bilinear')  # Smooth interpolation
         
-        axes[0].set_title('Predicted', fontsize=16, fontweight='bold', pad=15)
+        pred_title = f"Predicted (min={np.nanmin(pred_data_denorm):.3e}, max={np.nanmax(pred_data_denorm):.3e})"
+        axes[0].set_title(pred_title, fontsize=16, fontweight='bold', pad=15)
         axes[0].set_xlabel('I Index', fontsize=14, fontweight='bold')
         axes[0].set_ylabel('J Index', fontsize=14, fontweight='bold')
         axes[0].tick_params(labelsize=12, width=1.5)
@@ -4348,7 +4704,8 @@ class InteractiveVisualizationDashboard:
                            aspect='equal',  # Equal aspect ratio
                            interpolation='bilinear')  # Smooth interpolation
         
-        axes[1].set_title('True', fontsize=16, fontweight='bold', pad=15)
+        true_title = f"True (min={np.nanmin(true_data_denorm):.3e}, max={np.nanmax(true_data_denorm):.3e})"
+        axes[1].set_title(true_title, fontsize=16, fontweight='bold', pad=15)
         axes[1].set_xlabel('I Index', fontsize=14, fontweight='bold')
         axes[1].set_ylabel('J Index', fontsize=14, fontweight='bold')
         axes[1].tick_params(labelsize=12, width=1.5)
@@ -4379,7 +4736,7 @@ class InteractiveVisualizationDashboard:
             ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
             ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
         
-        plt.tight_layout()
+        _safe_tight_layout()
         plt.subplots_adjust(top=0.96, bottom=0.04, hspace=0.08)  # Minimal vertical spacing for compact layout
         
         # Return figure for capture instead of showing

@@ -142,7 +142,9 @@ class CustomizedLoss(nn.Module):
                 print(f"       • Grid: {config['data']['input_shape'][0]}×{config['data']['input_shape'][1]}×{config['data']['input_shape'][2]}×{config['data']['input_shape'][3]} = {self.spatial_normalization_factor:,}")
                 print(f"     ↳ Latent normalization: ÷ {self.latent_normalization_factor} dimensions (MSE per latent dim)")
                 print(f"     ↳ Observation normalization: ÷ {self.observation_normalization_factor} elements (MSE per observation)")
+                # Note: Observation structure (producers×2 + injectors) is defined in config.yaml data.observations
                 print(f"       • Formula: ({num_prod} producers×2 + {num_inj} injectors) × {config['training']['num_tsteps']} timesteps = {self.observation_normalization_factor}")
+                print(f"       • Note: Observation structure defined in config.yaml data.observations.variables")
                 print(f"       • 🔧 FIXED: Now uses num_tsteps={config['training']['num_tsteps']} (full episode) not nsteps={config['training']['nsteps']} (training horizon)")
                 print(f"     ↳ 🎯 All losses now balanced! Use λ ≈ 1.0 as starting point")
             else:

@@ -41,7 +41,7 @@ from testing.visualization.dashboard import InteractiveVisualizationDashboard
 SPATIAL_FIELDS = None  # None = all fields, or list of field names to calculate
 TIMESERIES_GROUPS = None  # None = all groups, or list of group names to calculate
 SPATIAL_LAYER = None  # None = all layers, or int layer index (0 to Nz-1) to calculate
-TIMESERIES_WELL = None  # None = all wells in group, or well name (e.g., 'BHP1', 'Energy Prod1') to calculate
+TIMESERIES_WELL = None  # None = all wells in group, or well name (defined in config.yaml data.observations.variables) to calculate
 NUM_TSTEP = 29  # Number of timesteps for prediction (default from dashboard)
 METRICS_CALCULATION_MODE = 'Averaged'  # 'Aggregated' or 'Averaged' - how to calculate metrics
 
@@ -56,12 +56,43 @@ CONFIG_PATH = 'config.yaml'
 WANDB_PROJECT = 'ROM-E2C-Prediction'  # WandB project name for prediction runs
 WANDB_ENABLED = True  # Set to False to disable wandb logging
 
-# Timeseries groups mapping (includes well names for individual well selection)
-TIMESERIES_GROUPS_MAP = {
-    'BHP (All Injectors)': (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'),
-    'Energy Production (All Producers)': (list(range(3, 6)), ['Energy Prod1', 'Energy Prod2', 'Energy Prod3'], 'BTU/Day'),
-    'Water Production (All Producers)': (list(range(6, 9)), ['Water Prod1', 'Water Prod2', 'Water Prod3'], 'bbl/day')
-}
+# Timeseries groups mapping - loaded from config file
+def load_timeseries_groups_map():
+    """Load timeseries groups mapping from config file"""
+    try:
+        from utilities.config_loader import load_config
+        config = load_config('config.yaml')
+        obs_config = config.get('data', {}).get('observations', {})
+        
+        if obs_config and 'variables' in obs_config:
+            obs_vars = obs_config['variables']
+            obs_order = obs_config.get('order', ['BHP', 'ENERGYRATE', 'WATRATRC'])
+            groups_map = {}
+            
+            for var_name in obs_order:
+                if var_name in obs_vars:
+                    var_config = obs_vars[var_name]
+                    indices = var_config.get('indices', [])
+                    well_names = var_config.get('well_names', [])
+                    unit_display = var_config.get('unit_display', '')
+                    group_name = var_config.get('group_name', '')
+                    
+                    if group_name:
+                        groups_map[group_name] = (indices, well_names, unit_display)
+            
+            return groups_map
+    except Exception as e:
+        print(f"⚠️ Could not load timeseries groups from config: {e}")
+        print("   Using default hard-coded mapping")
+    
+    # Fallback to default hard-coded mapping
+    return {
+        'BHP (All Injectors)': (list(range(3)), ['BHP1', 'BHP2', 'BHP3'], 'psi'),
+        'Energy Production (All Producers)': (list(range(3, 6)), ['Energy Prod1', 'Energy Prod2', 'Energy Prod3'], 'BTU/Day'),
+        'Water Production (All Producers)': (list(range(6, 9)), ['Water Prod1', 'Water Prod2', 'Water Prod3'], 'bbl/day')
+    }
+
+TIMESERIES_GROUPS_MAP = load_timeseries_groups_map()
 
 
 # ============================================================================

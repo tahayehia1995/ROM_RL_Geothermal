@@ -97,6 +97,9 @@ class ReservoirEnvironment(object):
         
         # Initialize with attempt to load latest normalization parameters automatically
         self._load_normalization_parameters_automatically()
+        
+        # Load observation and control variable definitions from ROM config for consistency
+        self._load_observation_control_definitions()
 
     def _map_agent_action_to_rom_input(self, action_01):
         """
@@ -114,32 +117,62 @@ class ReservoirEnvironment(object):
         # Step 1: Convert agent [0,1] to restricted physical ranges
         actions_restricted = action_01.clone()
         
-        # ✅ CORRECTED: Map Producer BHP (first 3 actions) to restricted range
-        bhp_min = self.restricted_action_ranges['producer_bhp']['min']
-        bhp_max = self.restricted_action_ranges['producer_bhp']['max']
-        actions_restricted[:, 0:3] = action_01[:, 0:3] * (bhp_max - bhp_min) + bhp_min
-        
-        # ✅ CORRECTED: Map Energy Injection (last 3 actions) to restricted range  
-        gas_min = self.restricted_action_ranges['gas_injection']['min']
-        gas_max = self.restricted_action_ranges['gas_injection']['max']
-        actions_restricted[:, 3:6] = action_01[:, 3:6] * (gas_max - gas_min) + gas_min
+        # Map actions using config-based control variable definitions
+        # Note: Control structure is defined in ROM config.yaml data.controls.variables
+        if hasattr(self, 'control_indices_map') and self.control_indices_map:
+            # Use config-based mapping
+            for var_name, indices in self.control_indices_map.items():
+                if var_name == 'BHP' and 'producer_bhp' in self.restricted_action_ranges:
+                    # Producer BHP controls
+                    bhp_min = self.restricted_action_ranges['producer_bhp']['min']
+                    bhp_max = self.restricted_action_ranges['producer_bhp']['max']
+                    for idx in indices:
+                        if idx < actions_restricted.shape[1]:
+                            actions_restricted[:, idx] = action_01[:, idx] * (bhp_max - bhp_min) + bhp_min
+                elif var_name == 'ENERGYRATE' and 'gas_injection' in self.restricted_action_ranges:
+                    # Energy injection controls
+                    gas_min = self.restricted_action_ranges['gas_injection']['min']
+                    gas_max = self.restricted_action_ranges['gas_injection']['max']
+                    for idx in indices:
+                        if idx < actions_restricted.shape[1]:
+                            actions_restricted[:, idx] = action_01[:, idx] * (gas_max - gas_min) + gas_min
+        else:
+            # Fallback to hard-coded structure if config not available
+            # Default: Producer BHP (first 3), Energy Injection (last 3)
+            bhp_min = self.restricted_action_ranges['producer_bhp']['min']
+            bhp_max = self.restricted_action_ranges['producer_bhp']['max']
+            actions_restricted[:, 0:3] = action_01[:, 0:3] * (bhp_max - bhp_min) + bhp_min
+            
+            gas_min = self.restricted_action_ranges['gas_injection']['min']
+            gas_max = self.restricted_action_ranges['gas_injection']['max']
+            actions_restricted[:, 3:6] = action_01[:, 3:6] * (gas_max - gas_min) + gas_min
         
         # Step 2: Normalize using TRAINING-ONLY parameters for ROM compatibility
         actions_for_rom = actions_restricted.clone()
         
-        # ✅ CORRECTED: Normalize Producer BHP using training parameters
-        if 'BHP' in self.norm_params:
-            bhp_params = self.norm_params['BHP']
-            full_bhp_min = float(bhp_params['min'])
-            full_bhp_max = float(bhp_params['max'])
-            actions_for_rom[:, 0:3] = (actions_restricted[:, 0:3] - full_bhp_min) / (full_bhp_max - full_bhp_min)
-        
-        # ✅ CORRECTED: Normalize Energy Injection using training parameters
-        if 'ENERGYRATE' in self.norm_params:
-            gas_params = self.norm_params['ENERGYRATE']
-            full_gas_min = float(gas_params['min'])
-            full_gas_max = float(gas_params['max'])
-            actions_for_rom[:, 3:6] = (actions_restricted[:, 3:6] - full_gas_min) / (full_gas_max - full_gas_min)
+        # Normalize using config-based control variable mapping
+        if hasattr(self, 'control_indices_map') and self.control_indices_map:
+            for var_name, indices in self.control_indices_map.items():
+                if var_name in self.norm_params:
+                    norm_params = self.norm_params[var_name]
+                    full_min = float(norm_params['min']) if isinstance(norm_params['min'], str) else norm_params['min']
+                    full_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
+                    for idx in indices:
+                        if idx < actions_for_rom.shape[1]:
+                            actions_for_rom[:, idx] = (actions_restricted[:, idx] - full_min) / (full_max - full_min)
+        else:
+            # Fallback to hard-coded normalization
+            if 'BHP' in self.norm_params:
+                bhp_params = self.norm_params['BHP']
+                full_bhp_min = float(bhp_params['min'])
+                full_bhp_max = float(bhp_params['max'])
+                actions_for_rom[:, 0:3] = (actions_restricted[:, 0:3] - full_bhp_min) / (full_bhp_max - full_bhp_min)
+            
+            if 'ENERGYRATE' in self.norm_params:
+                gas_params = self.norm_params['ENERGYRATE']
+                full_gas_min = float(gas_params['min'])
+                full_gas_max = float(gas_params['max'])
+                actions_for_rom[:, 3:6] = (actions_restricted[:, 3:6] - full_gas_min) / (full_gas_max - full_gas_min)
         
         return actions_for_rom
 
@@ -159,32 +192,59 @@ class ReservoirEnvironment(object):
         # Step 1: Convert [0,1] to dashboard physical ranges
         actions_physical = action_01.clone()
         
-        # Map Producer BHP (first 3 actions) from [0,1] to dashboard BHP range
-        bhp_min = self.restricted_action_ranges['producer_bhp']['min']
-        bhp_max = self.restricted_action_ranges['producer_bhp']['max']
-        actions_physical[:, 0:3] = action_01[:, 0:3] * (bhp_max - bhp_min) + bhp_min
-        
-        # Map Energy Injection (last 3 actions) from [0,1] to dashboard energy range  
-        gas_min = self.restricted_action_ranges['gas_injection']['min']
-        gas_max = self.restricted_action_ranges['gas_injection']['max']
-        actions_physical[:, 3:6] = action_01[:, 3:6] * (gas_max - gas_min) + gas_min
+        # Map actions using config-based control variable definitions
+        # Note: Control structure is defined in ROM config.yaml data.controls.variables
+        if hasattr(self, 'control_indices_map') and self.control_indices_map:
+            # Use config-based mapping
+            for var_name, indices in self.control_indices_map.items():
+                if var_name == 'BHP' and 'producer_bhp' in self.restricted_action_ranges:
+                    bhp_min = self.restricted_action_ranges['producer_bhp']['min']
+                    bhp_max = self.restricted_action_ranges['producer_bhp']['max']
+                    for idx in indices:
+                        if idx < actions_physical.shape[1]:
+                            actions_physical[:, idx] = action_01[:, idx] * (bhp_max - bhp_min) + bhp_min
+                elif var_name == 'ENERGYRATE' and 'gas_injection' in self.restricted_action_ranges:
+                    gas_min = self.restricted_action_ranges['gas_injection']['min']
+                    gas_max = self.restricted_action_ranges['gas_injection']['max']
+                    for idx in indices:
+                        if idx < actions_physical.shape[1]:
+                            actions_physical[:, idx] = action_01[:, idx] * (gas_max - gas_min) + gas_min
+        else:
+            # Fallback to hard-coded structure if config not available
+            bhp_min = self.restricted_action_ranges['producer_bhp']['min']
+            bhp_max = self.restricted_action_ranges['producer_bhp']['max']
+            actions_physical[:, 0:3] = action_01[:, 0:3] * (bhp_max - bhp_min) + bhp_min
+            
+            gas_min = self.restricted_action_ranges['gas_injection']['min']
+            gas_max = self.restricted_action_ranges['gas_injection']['max']
+            actions_physical[:, 3:6] = action_01[:, 3:6] * (gas_max - gas_min) + gas_min
         
         # Step 2: Normalize using GLOBAL training parameters for ROM compatibility
         actions_for_rom = actions_physical.clone()
         
-        # Normalize Producer BHP using global training parameters
-        if 'BHP' in self.norm_params:
-            bhp_params = self.norm_params['BHP']
-            full_bhp_min = float(bhp_params['min'])
-            full_bhp_max = float(bhp_params['max'])
-            actions_for_rom[:, 0:3] = (actions_physical[:, 0:3] - full_bhp_min) / (full_bhp_max - full_bhp_min)
-        
-        # Normalize Energy Injection using global training parameters
-        if 'ENERGYRATE' in self.norm_params:
-            gas_params = self.norm_params['ENERGYRATE']
-            full_gas_min = float(gas_params['min'])
-            full_gas_max = float(gas_params['max'])
-            actions_for_rom[:, 3:6] = (actions_physical[:, 3:6] - full_gas_min) / (full_gas_max - full_gas_min)
+        # Normalize using config-based control variable mapping
+        if hasattr(self, 'control_indices_map') and self.control_indices_map:
+            for var_name, indices in self.control_indices_map.items():
+                if var_name in self.norm_params:
+                    norm_params = self.norm_params[var_name]
+                    full_min = float(norm_params['min']) if isinstance(norm_params['min'], str) else norm_params['min']
+                    full_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
+                    for idx in indices:
+                        if idx < actions_for_rom.shape[1]:
+                            actions_for_rom[:, idx] = (actions_physical[:, idx] - full_min) / (full_max - full_min)
+        else:
+            # Fallback to hard-coded normalization
+            if 'BHP' in self.norm_params:
+                bhp_params = self.norm_params['BHP']
+                full_bhp_min = float(bhp_params['min'])
+                full_bhp_max = float(bhp_params['max'])
+                actions_for_rom[:, 0:3] = (actions_physical[:, 0:3] - full_bhp_min) / (full_bhp_max - full_bhp_min)
+            
+            if 'ENERGYRATE' in self.norm_params:
+                gas_params = self.norm_params['ENERGYRATE']
+                full_gas_min = float(gas_params['min'])
+                full_gas_max = float(gas_params['max'])
+                actions_for_rom[:, 3:6] = (actions_physical[:, 3:6] - full_gas_min) / (full_gas_max - full_gas_min)
         
         # Debug info for first few steps
         if self.istep <= 3:
@@ -206,15 +266,31 @@ class ReservoirEnvironment(object):
         """
         actions_physical = action_01.clone()
         
-        # Convert Producer BHP (first 3 actions) from [0,1] to dashboard BHP range
-        bhp_min = self.restricted_action_ranges['producer_bhp']['min']
-        bhp_max = self.restricted_action_ranges['producer_bhp']['max']
-        actions_physical[:, 0:3] = action_01[:, 0:3] * (bhp_max - bhp_min) + bhp_min
-        
-        # Convert Gas Injection (last 3 actions) from [0,1] to dashboard gas range  
-        gas_min = self.restricted_action_ranges['gas_injection']['min']
-        gas_max = self.restricted_action_ranges['gas_injection']['max']
-        actions_physical[:, 3:6] = action_01[:, 3:6] * (gas_max - gas_min) + gas_min
+        # Convert actions using config-based control variable definitions
+        # Note: Control structure is defined in ROM config.yaml data.controls.variables
+        if hasattr(self, 'control_indices_map') and self.control_indices_map:
+            for var_name, indices in self.control_indices_map.items():
+                if var_name == 'BHP' and 'producer_bhp' in self.restricted_action_ranges:
+                    bhp_min = self.restricted_action_ranges['producer_bhp']['min']
+                    bhp_max = self.restricted_action_ranges['producer_bhp']['max']
+                    for idx in indices:
+                        if idx < actions_physical.shape[1]:
+                            actions_physical[:, idx] = action_01[:, idx] * (bhp_max - bhp_min) + bhp_min
+                elif var_name == 'ENERGYRATE' and 'gas_injection' in self.restricted_action_ranges:
+                    gas_min = self.restricted_action_ranges['gas_injection']['min']
+                    gas_max = self.restricted_action_ranges['gas_injection']['max']
+                    for idx in indices:
+                        if idx < actions_physical.shape[1]:
+                            actions_physical[:, idx] = action_01[:, idx] * (gas_max - gas_min) + gas_min
+        else:
+            # Fallback to hard-coded structure if config not available
+            bhp_min = self.restricted_action_ranges['producer_bhp']['min']
+            bhp_max = self.restricted_action_ranges['producer_bhp']['max']
+            actions_physical[:, 0:3] = action_01[:, 0:3] * (bhp_max - bhp_min) + bhp_min
+            
+            gas_min = self.restricted_action_ranges['gas_injection']['min']
+            gas_max = self.restricted_action_ranges['gas_injection']['max']
+            actions_physical[:, 3:6] = action_01[:, 3:6] * (gas_max - gas_min) + gas_min
         
         return actions_physical
 
@@ -318,7 +394,8 @@ class ReservoirEnvironment(object):
             raise ValueError("❌ CRITICAL: No normalization parameters found! Run dashboard configuration first to generate parameters.")
         
         # Final validation - ensure all required parameters are available
-        required_params = ['BHP', 'ENERGYRATE', 'WATRATRC']
+        # Note: Required params should come from config, but use defaults for backward compatibility
+        required_params = ['BHP', 'ENERGYRATE', 'WATRATRC']  # Default fallback - should be loaded from config
         missing_params = [p for p in required_params if p not in self.norm_params]
         if missing_params:
             raise ValueError(f"❌ CRITICAL: Missing required normalization parameters: {missing_params}. Available: {list(self.norm_params.keys())}")
@@ -327,6 +404,84 @@ class ReservoirEnvironment(object):
         print("   🎯 TRAINING-ONLY normalization parameters (NO data leakage)")
         print("   📊 Optimal structure from configuration")
         print("   🔧 Optimal action/observation mappings")
+    
+    def _load_observation_control_definitions(self):
+        """Load observation and control variable definitions from ROM config.yaml for consistency"""
+        self.obs_variable_map = {}  # Maps observation index to variable name
+        self.obs_indices_map = {}  # Maps variable name to observation indices
+        self.control_variable_map = {}  # Maps control index to variable name
+        self.control_indices_map = {}  # Maps variable name to control indices
+        
+        # Try to load from ROM config.yaml
+        rom_config_path = getattr(self.config, 'rom_config_path', None)
+        if rom_config_path is None:
+            # Try default path
+            rom_config_path = '../ROM_Refactored/config.yaml'
+        
+        try:
+            import yaml
+            import os
+            
+            # Resolve path relative to current file location
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            rom_config_full_path = os.path.normpath(os.path.join(current_dir, '..', '..', 'ROM_Refactored', 'config.yaml'))
+            
+            if os.path.exists(rom_config_full_path):
+                with open(rom_config_full_path, 'r') as f:
+                    rom_config = yaml.safe_load(f)
+                
+                # Load observation definitions
+                obs_config = rom_config.get('data', {}).get('observations', {})
+                if obs_config and 'variables' in obs_config:
+                    obs_vars = obs_config['variables']
+                    obs_order = obs_config.get('order', ['BHP', 'ENERGYRATE', 'WATRATRC'])
+                    
+                    for var_name in obs_order:
+                        if var_name in obs_vars:
+                            var_config = obs_vars[var_name]
+                            indices = var_config.get('indices', [])
+                            self.obs_indices_map[var_name] = indices
+                            for idx in indices:
+                                self.obs_variable_map[idx] = var_name
+                    
+                    print(f"✅ Loaded observation definitions from ROM config: {len(obs_order)} observation types")
+                
+                # Load control definitions
+                control_config = rom_config.get('data', {}).get('controls', {})
+                if control_config and 'variables' in control_config:
+                    control_vars = control_config['variables']
+                    control_order = control_config.get('order', ['BHP'])
+                    
+                    # Build control indices map (controls are typically BHP for all wells)
+                    control_idx = 0
+                    for var_name in control_order:
+                        if var_name in control_vars:
+                            var_config = control_vars[var_name]
+                            num_wells = var_config.get('num_wells', 0)
+                            well_type = var_config.get('well_type', '')
+                            
+                            # Determine indices based on well type and count
+                            if well_type == 'injectors':
+                                # Controls for injectors come first (if any)
+                                indices = list(range(control_idx, control_idx + num_wells))
+                            elif well_type == 'producers':
+                                # Controls for producers come after injectors
+                                indices = list(range(control_idx, control_idx + num_wells))
+                            else:
+                                indices = list(range(control_idx, control_idx + num_wells))
+                            
+                            self.control_indices_map[var_name] = indices
+                            for idx in indices:
+                                self.control_variable_map[idx] = var_name
+                            
+                            control_idx += num_wells
+                    
+                    print(f"✅ Loaded control definitions from ROM config: {len(control_order)} control types")
+            else:
+                print(f"⚠️ ROM config file not found at {rom_config_full_path}, using defaults")
+        except Exception as e:
+            print(f"⚠️ Could not load observation/control definitions from ROM config: {e}")
+            print("   Using default hard-coded mappings")
     
     def _convert_strings_to_numbers(self, params_dict):
         """
@@ -407,68 +562,47 @@ class ReservoirEnvironment(object):
     
     def _denormalize_single_observation(self, data, obs_idx):
         """
-        Denormalize single observation using optimal ROM structure
-        
-        Optimal order: [Injector_BHP(0-2), Gas_Production(3-5), Water_Production(6-8)]
+        Denormalize single observation using config-based variable mapping
         
         Args:
             data: Normalized observation data
             obs_idx: Observation index
             
         Returns:
-            Denormalized data using optimal structure and training parameters
+            Denormalized data using config-based structure and training parameters
         """
-        if obs_idx < 3:  # Injector BHP (0-2)
-            if 'BHP' in self.norm_params:
-                norm_params = self.norm_params['BHP']
-                if norm_params.get('type') == 'none':
-                    return data
-                elif norm_params.get('type') == 'log':
-                    log_min = float(norm_params['log_min']) if isinstance(norm_params['log_min'], str) else norm_params['log_min']
-                    log_max = float(norm_params['log_max']) if isinstance(norm_params['log_max'], str) else norm_params['log_max']
-                    log_data = data * (log_max - log_min) + log_min
-                    epsilon = float(norm_params.get('epsilon', 1e-8)) if isinstance(norm_params.get('epsilon', 1e-8), str) else norm_params.get('epsilon', 1e-8)
-                    data_shift = float(norm_params.get('data_shift', 0)) if isinstance(norm_params.get('data_shift', 0), str) else norm_params.get('data_shift', 0)
-                    return torch.exp(log_data) - epsilon + data_shift
-                else:
-                    obs_min = float(norm_params['min']) if isinstance(norm_params['min'], str) else norm_params['min']
-                    obs_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
-                    return data * (obs_max - obs_min) + obs_min
-        elif obs_idx < 6:  # ✅ CORRECTED: Energy production (3-5)
-            if 'ENERGYRATE' in self.norm_params:
-                norm_params = self.norm_params['ENERGYRATE']
-                if norm_params.get('type') == 'none':
-                    return data
-                elif norm_params.get('type') == 'log':
-                    log_min = float(norm_params['log_min']) if isinstance(norm_params['log_min'], str) else norm_params['log_min']
-                    log_max = float(norm_params['log_max']) if isinstance(norm_params['log_max'], str) else norm_params['log_max']
-                    log_data = data * (log_max - log_min) + log_min
-                    epsilon = float(norm_params.get('epsilon', 1e-8)) if isinstance(norm_params.get('epsilon', 1e-8), str) else norm_params.get('epsilon', 1e-8)
-                    data_shift = float(norm_params.get('data_shift', 0)) if isinstance(norm_params.get('data_shift', 0), str) else norm_params.get('data_shift', 0)
-                    return torch.exp(log_data) - epsilon + data_shift
-                else:
-                    obs_min = float(norm_params['min']) if isinstance(norm_params['min'], str) else norm_params['min']
-                    obs_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
-                    return data * (obs_max - obs_min) + obs_min
-        else:  # ✅ CORRECTED: Water production (6-8)
-            if 'WATRATRC' in self.norm_params:
-                norm_params = self.norm_params['WATRATRC']
-                if norm_params.get('type') == 'none':
-                    return data
-                elif norm_params.get('type') == 'log':
-                    log_min = float(norm_params['log_min']) if isinstance(norm_params['log_min'], str) else norm_params['log_min']
-                    log_max = float(norm_params['log_max']) if isinstance(norm_params['log_max'], str) else norm_params['log_max']
-                    log_data = data * (log_max - log_min) + log_min
-                    epsilon = float(norm_params.get('epsilon', 1e-8)) if isinstance(norm_params.get('epsilon', 1e-8), str) else norm_params.get('epsilon', 1e-8)
-                    data_shift = float(norm_params.get('data_shift', 0)) if isinstance(norm_params.get('data_shift', 0), str) else norm_params.get('data_shift', 0)
-                    return torch.exp(log_data) - epsilon + data_shift
-                else:
-                    obs_min = float(norm_params['min']) if isinstance(norm_params['min'], str) else norm_params['min']
-                    obs_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
-                    return data * (obs_max - obs_min) + obs_min
-            
-        # NO FALLBACKS - if we reach here, something is wrong with parameter loading
-        raise ValueError(f"❌ Missing normalization parameters for observation {obs_idx}! Available params: {list(self.norm_params.keys())}")
+        # Get variable name from observation index using config-based mapping
+        var_name = self.obs_variable_map.get(obs_idx, None)
+        
+        if var_name is None:
+            # Fallback to old hard-coded logic if mapping not available
+            # Note: Observation indices are defined in ROM config.yaml data.observations.variables
+            if obs_idx < 3:  # Default BHP observations
+                var_name = 'BHP'
+            elif obs_idx < 6:  # Default energy production observations
+                var_name = 'ENERGYRATE'
+            else:  # Default water production observations
+                var_name = 'WATRATRC'
+        
+        # Denormalize using variable name from config
+        if var_name in self.norm_params:
+            norm_params = self.norm_params[var_name]
+            if norm_params.get('type') == 'none':
+                return data
+            elif norm_params.get('type') == 'log':
+                log_min = float(norm_params['log_min']) if isinstance(norm_params['log_min'], str) else norm_params['log_min']
+                log_max = float(norm_params['log_max']) if isinstance(norm_params['log_max'], str) else norm_params['log_max']
+                log_data = data * (log_max - log_min) + log_min
+                epsilon = float(norm_params.get('epsilon', 1e-8)) if isinstance(norm_params.get('epsilon', 1e-8), str) else norm_params.get('epsilon', 1e-8)
+                data_shift = float(norm_params.get('data_shift', 0)) if isinstance(norm_params.get('data_shift', 0), str) else norm_params.get('data_shift', 0)
+                return torch.exp(log_data) - epsilon + data_shift
+            else:
+                obs_min = float(norm_params['min']) if isinstance(norm_params['min'], str) else norm_params['min']
+                obs_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
+                return data * (obs_max - obs_min) + obs_min
+        
+        # If variable not found, return data as-is
+        return data
     
     def step(self, action):
         self.istep += 1

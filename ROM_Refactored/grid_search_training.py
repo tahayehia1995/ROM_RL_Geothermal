@@ -41,16 +41,16 @@ HYPERPARAMETER_GRID = {
     'batch_size': [128],
     'n_steps': [2],  # Available processed data files
     'n_channels': [4],  # Number of channels (2 for SW/SG, 4 for SW/SG/PRES/PERMI, etc.)
-    'latent_dim': [70],
+    'latent_dim': [128],
     # Learning rate scheduler
     'lr_scheduler_type': ['fixed'],#, 'fixed', 'reduce_on_plateau', 'exponential_decay', 'step_decay', 'cosine_annealing'],
     
     # Architecture parameters
     'residual_blocks': [3],  # Number of residual blocks in encoder/decoder
-    'encoder_hidden_dims': [[300, 300,300]],  # Transition encoder hidden dimensions
+    'encoder_hidden_dims': [[400, 400]],  # Transition encoder hidden dimensions
     
-    # Transition model type
-    'transition_type': ['linear'],  # Transition model: 'linear' or 'fno'
+    # Transition model type (only linear supported, FNO removed)
+    'transition_type': ['linear'],  # Transition model: 'linear' only
     
     # Dynamic loss weighting
     'dynamic_loss_weighting_enable': [False],
@@ -125,23 +125,14 @@ ADVERSARIAL_PARAMS = {
     'discriminator_update_frequency': [2]
 }
 
-# FNO parameters (optimized for 34×16×25 reservoir grid)
-FNO_PARAMS = {
-    'fno_width': [32],  # Optimized from 64 for efficiency
-    'modes_x': [12],    # Optimized for X=34 dimension
-    'modes_y': [6],     # Optimized for Y=16 dimension
-    'modes_z': [6],     # Optimized for Z=25 dimension
-    'n_layers': [3],    # Optimized from 4 for speed
-    'control_injection': ['spatial_encoding', 'well_specific_spatial', 'global_conditioning']  # All three methods available
-}
-
 # Channel names mapping based on n_channels
 # Maps number of channels to list of channel names in order
 # WARNING: This is a FALLBACK only. The actual order is loaded from processed data files.
 # If this doesn't match your data, update it or ensure processed data has training_channel_names.
 CHANNEL_NAMES_MAP = {
     2: ['PRES', 'TEMP'],
-    4: ['PRES', 'PERMI', 'TEMP', 'VPOROSTGEO']  # Updated to match actual data order: PRES(0), PERMI(1), TEMP(2), VPOROSTGEO(3)
+    3: ['PERMI', 'TEMP', 'VPOROSGEO'],
+    4: ['PRES', 'PERMI', 'TEMP', 'VPOROSGEO']  # Updated to match actual data order: PRES(0), PERMI(1), TEMP(2), VPOROSTGEO(3)
 }
 
 # Output directories
@@ -337,21 +328,10 @@ def validate_hyperparameter_combination(hyperparams: Dict[str, Any]) -> Tuple[bo
     Returns:
         Tuple of (is_valid, error_message)
     """
-    # Validate transition type and FNO parameters
+    # Validate transition type (only linear supported, FNO removed)
     transition_type = hyperparams.get('transition_type', 'linear')
-    if transition_type not in ['linear', 'fno']:
-        return False, f"Unknown transition type: {transition_type}"
-    
-    if transition_type == 'fno':
-        if 'fno_params' not in hyperparams:
-            return False, "FNO transition type requires 'fno_params'"
-        fno_params = hyperparams['fno_params']
-        required_fno_keys = ['fno_width', 'modes_x', 'modes_y', 'modes_z', 'n_layers', 'control_injection']
-        for key in required_fno_keys:
-            if key not in fno_params:
-                return False, f"Missing required FNO parameter: {key}"
-        if fno_params['control_injection'] not in ['spatial_encoding', 'well_specific_spatial', 'global_conditioning']:
-            return False, f"Invalid control_injection method: {fno_params['control_injection']}"
+    if transition_type != 'linear':
+        return False, f"Only 'linear' transition type is supported. FNO has been removed. Got: {transition_type}"
     
     # Validate scheduler parameters are only included when scheduler type is not 'fixed'
     scheduler_type = hyperparams.get('lr_scheduler_type', 'fixed')
@@ -495,26 +475,7 @@ def expand_conditional_parameters(base_hyperparams: Dict[str, Any]) -> List[Dict
                 new_expanded.append(new_base)
         expanded = new_expanded
     
-    # Expand FNO parameters
-    transition_type = base_hyperparams.get('transition_type', 'linear')
-    
-    if transition_type == 'fno':
-        fno_keys = list(FNO_PARAMS.keys())
-        fno_values = list(FNO_PARAMS.values())
-        
-        fno_combinations = []
-        for combo in itertools.product(*fno_values):
-            fno_dict = dict(zip(fno_keys, combo))
-            fno_combinations.append(fno_dict)
-        
-        # Create new expanded combinations with FNO params
-        new_expanded = []
-        for base in expanded:
-            for fno_combo in fno_combinations:
-                new_base = base.copy()
-                new_base['fno_params'] = fno_combo
-                new_expanded.append(new_base)
-        expanded = new_expanded
+    # FNO parameter expansion removed - only linear transition supported
     
     return expanded
 
@@ -592,14 +553,11 @@ def create_run_id(hyperparams: Dict[str, Any], run_index: int) -> str:
         ehd_str = format_encoder_hidden_dims(hyperparams['encoder_hidden_dims'])
         parts.append(f"ehd{ehd_str}")
     
-    # Transition type
+    # Transition type (only linear supported)
     transition_type = hyperparams.get('transition_type', 'linear')
-    if transition_type == 'fno':
-        parts.append("fno")
-        # Add control injection method for FNO
-        if 'fno_params' in hyperparams and 'control_injection' in hyperparams['fno_params']:
-            ci_method = hyperparams['fno_params']['control_injection']
-            parts.append(f"ci{format_control_injection_abbreviation(ci_method)}")
+    if transition_type != 'linear':
+        # Warn if non-linear type specified (shouldn't happen)
+        parts.append("linear")  # Force linear
     else:
         parts.append("lin")
     
@@ -645,15 +603,10 @@ def create_run_name(hyperparams: Dict[str, Any], run_index: int) -> str:
     if 'residual_blocks' in hyperparams:
         parts.append(f"rb{hyperparams['residual_blocks']}")
     
-    # Transition type
+    # Transition type (only linear supported)
     transition_type = hyperparams.get('transition_type', 'linear')
-    if transition_type == 'fno':
-        parts.append("FNO")
-        # Add control injection method for FNO
-        if 'fno_params' in hyperparams and 'control_injection' in hyperparams['fno_params']:
-            ci_method = hyperparams['fno_params']['control_injection']
-            ci_abbrev = format_control_injection_abbreviation(ci_method)
-            parts.append(f"CI-{ci_abbrev.upper()}")
+    if transition_type != 'linear':
+        parts.append("Linear")  # Force linear
     else:
         parts.append("Linear")
     
@@ -843,28 +796,7 @@ def update_config_with_hyperparams(config_path: str, hyperparams: Dict[str, Any]
     if 'encoder_hidden_dims' in hyperparams:
         config.config['transition']['encoder_hidden_dims'] = hyperparams['encoder_hidden_dims']
     
-    # Update FNO parameters (when FNO is enabled)
-    if transition_type == 'fno':
-        if 'fno_params' in hyperparams:
-            fno_params = hyperparams['fno_params']
-            
-            # Initialize FNO config section
-            if 'fno' not in config.config['transition']:
-                config.config['transition']['fno'] = {}
-            
-            # Set FNO architecture parameters
-            if 'fno_width' in fno_params:
-                config.config['transition']['fno']['width'] = fno_params['fno_width']
-            if 'modes_x' in fno_params:
-                config.config['transition']['fno']['modes_x'] = fno_params['modes_x']
-            if 'modes_y' in fno_params:
-                config.config['transition']['fno']['modes_y'] = fno_params['modes_y']
-            if 'modes_z' in fno_params:
-                config.config['transition']['fno']['modes_z'] = fno_params['modes_z']
-            if 'n_layers' in fno_params:
-                config.config['transition']['fno']['n_layers'] = fno_params['n_layers']
-            if 'control_injection' in fno_params:
-                config.config['transition']['fno']['control_injection'] = fno_params['control_injection']
+    # FNO parameter updates removed - only linear transition supported
     
     # Update dynamic loss weighting
     dlw_enable = hyperparams.get('dynamic_loss_weighting_enable', False)
@@ -1177,6 +1109,16 @@ def run_single_training(config_path: str, hyperparams: Dict[str, Any], run_index
         channel_names = get_channel_names(n_channels, loaded_data=loaded_data)
         print(f"📊 Using channel order: {channel_names}")
         print(f"   ⚠️ IMPORTANT: This order must match the channel order in state_pred tensors!")
+        
+        # Validate channel order matches tensor
+        if loaded_data and 'STATE_train' in loaded_data and loaded_data['STATE_train']:
+            tensor_n_channels = loaded_data['STATE_train'][0].shape[1] if len(loaded_data['STATE_train'][0].shape) == 5 else 0
+            if tensor_n_channels > 0 and len(channel_names) != tensor_n_channels:
+                print(f"   ⚠️ WARNING: Channel count mismatch!")
+                print(f"      channel_names: {len(channel_names)}")
+                print(f"      Tensor channels: {tensor_n_channels}")
+            elif tensor_n_channels > 0:
+                print(f"   ✅ Channel count verified: {len(channel_names)} channels match tensor")
         
         # Create config with hyperparameters
         config = update_config_with_hyperparams(config_path, hyperparams)
@@ -1867,8 +1809,6 @@ if __name__ == "__main__":
     
     # Run main grid search
     main()
-
-
 
 
 # %%

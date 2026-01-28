@@ -236,6 +236,9 @@ class EnhancedTrainingOrchestrator:
             'spatial_states': []  # 🔥 NEW: Spatial states during current episode
         }
         
+        # Load observation and control variable definitions from ROM config for consistency
+        self._load_observation_control_definitions()
+        
         # 🔥 NEW: Training performance tracking for dashboard
         self.training_metrics = {
             'episode_rewards': [],
@@ -257,6 +260,82 @@ class EnhancedTrainingOrchestrator:
         self.environment = environment
         print(f"🔗 Environment linked to training orchestrator for spatial capture")
         
+    def _load_observation_control_definitions(self):
+        """Load observation and control variable definitions from ROM config.yaml for consistency"""
+        self.obs_variable_map = {}  # Maps observation index to variable name
+        self.obs_indices_map = {}  # Maps variable name to observation indices
+        self.obs_config = {}  # Store full observation config
+        self.control_variable_map = {}  # Maps control index to variable name
+        self.control_indices_map = {}  # Maps variable name to control indices
+        
+        # Try to load from ROM config.yaml
+        rom_config_path = getattr(self.config, 'rom_config_path', None)
+        if rom_config_path is None:
+            # Try default path
+            rom_config_path = '../ROM_Refactored/config.yaml'
+        
+        try:
+            import yaml
+            import os
+            
+            # Resolve path relative to current file location
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            rom_config_full_path = os.path.normpath(os.path.join(current_dir, '..', '..', 'ROM_Refactored', 'config.yaml'))
+            
+            if os.path.exists(rom_config_full_path):
+                with open(rom_config_full_path, 'r') as f:
+                    rom_config = yaml.safe_load(f)
+                
+                # Load observation definitions
+                obs_config = rom_config.get('data', {}).get('observations', {})
+                if obs_config and 'variables' in obs_config:
+                    self.obs_config = obs_config
+                    obs_vars = obs_config['variables']
+                    obs_order = obs_config.get('order', ['BHP', 'ENERGYRATE', 'WATRATRC'])
+                    
+                    for var_name in obs_order:
+                        if var_name in obs_vars:
+                            var_config = obs_vars[var_name]
+                            indices = var_config.get('indices', [])
+                            self.obs_indices_map[var_name] = indices
+                            for idx in indices:
+                                self.obs_variable_map[idx] = var_name
+                    
+                    print(f"✅ Loaded observation definitions from ROM config: {len(obs_order)} observation types")
+                
+                # Load control definitions
+                control_config = rom_config.get('data', {}).get('controls', {})
+                if control_config and 'variables' in control_config:
+                    control_vars = control_config['variables']
+                    control_order = control_config.get('order', ['BHP'])
+                    
+                    control_idx = 0
+                    for var_name in control_order:
+                        if var_name in control_vars:
+                            var_config = control_vars[var_name]
+                            num_wells = var_config.get('num_wells', 0)
+                            well_type = var_config.get('well_type', '')
+                            
+                            if well_type == 'injectors':
+                                indices = list(range(control_idx, control_idx + num_wells))
+                            elif well_type == 'producers':
+                                indices = list(range(control_idx, control_idx + num_wells))
+                            else:
+                                indices = list(range(control_idx, control_idx + num_wells))
+                            
+                            self.control_indices_map[var_name] = indices
+                            for idx in indices:
+                                self.control_variable_map[idx] = var_name
+                            
+                            control_idx += num_wells
+                    
+                    print(f"✅ Loaded control definitions from ROM config: {len(control_order)} control types")
+            else:
+                print(f"⚠️ ROM config file not found at {rom_config_full_path}, using defaults")
+        except Exception as e:
+            print(f"⚠️ Could not load observation/control definitions from ROM config: {e}")
+            print("   Using default hard-coded mappings")
+    
     def _setup_training_phases(self):
         """Setup training phases based on config"""
         max_episodes = self.config.rl_model['training']['max_episodes']
@@ -425,9 +504,52 @@ class EnhancedTrainingOrchestrator:
         
         well_observations = {}
         
-        # Optimal observation order: [Injector_BHP(0-2), Gas_Production(3-5), Water_Production(6-8)]
-        # Values are ALREADY in physical units - just map to well names
+        # Use config-based observation mapping if available
+        # Note: Observation structure is defined in ROM config.yaml data.observations.variables
+        if hasattr(self, 'obs_indices_map') and self.obs_indices_map:
+            try:
+                # Map observations using config-based indices
+                for var_name, indices in self.obs_indices_map.items():
+                    var_config = getattr(self, 'obs_config', {}).get('variables', {}).get(var_name, {})
+                    well_names = var_config.get('well_names', [])
+                    well_type = var_config.get('well_type', '')
+                    unit_display = var_config.get('unit_display', '')
+                    
+                    for idx, obs_idx in enumerate(indices):
+                        if obs_idx < len(obs_np):
+                            physical_value = obs_np[obs_idx]
+                            
+                            # Get well name from config or fallback
+                            if idx < len(well_names):
+                                well_name = well_names[idx]
+                            else:
+                                # Fallback naming
+                                if well_type == 'injectors':
+                                    well_name = f"I{idx+1}"
+                                elif well_type == 'producers':
+                                    well_name = f"P{idx+1}"
+                                else:
+                                    well_name = f"W{idx+1}"
+                            
+                            # Build observation key based on variable name and unit
+                            if var_name == 'BHP':
+                                well_observations[f"{well_name}_BHP_psi"] = physical_value
+                            elif var_name == 'ENERGYRATE':
+                                well_observations[f"{well_name}_Gas_ft3day"] = physical_value
+                            elif var_name == 'WATRATRC':
+                                well_observations[f"{well_name}_Water_ft3day"] = physical_value
+                                # Convert to barrels for economic calculations
+                                well_observations[f"{well_name}_Water_bblday"] = physical_value / 5.614583
+                            else:
+                                # Generic key
+                                well_observations[f"{well_name}_{var_name}"] = physical_value
+                
+                return well_observations
+            except Exception as e:
+                print(f"⚠️ Error mapping observations using config: {e}, falling back to hard-coded")
         
+        # Fallback to hard-coded logic if config not available
+        # Default observation order: [Injector_BHP(0-2), Energy_Production(3-5), Water_Production(6-8)]
         try:
             # Injector BHP (indices 0-2) - already in psi
             for i in range(min(3, len(obs_np))):
@@ -498,7 +620,8 @@ class EnhancedTrainingOrchestrator:
                         action_physical[f"{well_name}_BHP_psi"] = physical_value
             
             # Energy Injection (indices 3-5) - USE DASHBOARD RANGES
-            gas_ranges = action_ranges.get('gas_injection', {})
+            # Try 'gas_injection' first, then 'gas' as fallback
+            gas_ranges = action_ranges.get('gas_injection', action_ranges.get('gas', {}))
             if gas_ranges:
                 # Get dashboard gas range
                 gas_mins = [ranges['min'] for ranges in gas_ranges.values()]
