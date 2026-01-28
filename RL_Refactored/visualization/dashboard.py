@@ -88,7 +88,7 @@ class ScientificVisualization:
             print("⚠️ Could not load preprocessing normalization parameters for visualization.")
         
         # Load observation and control variable definitions from ROM config for consistency
-        self._load_observation_control_definitions()")
+        self._load_observation_control_definitions()
         
         # Publication-quality plot settings
         plt.style.use('default')

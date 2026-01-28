@@ -1,0 +1,65 @@
+{
+    "spatial_channels": {
+        "PRES": {
+            "normalization_type": "minmax",
+            "selected_for_training": true,
+            "parameters": {
+                "type": "minmax",
+                "min": "1767.53",
+                "max": "3974.2373"
+            }
+        },
+        "PERMI": {
+            "normalization_type": "minmax",
+            "selected_for_training": true,
+            "parameters": {
+                "type": "minmax",
+                "min": "9.869233e-18",
+                "max": "1.6332993e-13"
+            }
+        },
+        "TEMP": {
+            "normalization_type": "minmax",
+            "selected_for_training": true,
+            "parameters": {
+                "type": "minmax",
+                "min": "291.37427",
+                "max": "538.75806"
+            }
+        },
+        "VPOROSGEO": {
+            "normalization_type": "minmax",
+            "selected_for_training": true,
+            "parameters": {
+                "type": "minmax",
+                "min": "0.07775109",
+                "max": "0.25176838"
+            }
+        }
+    },
+    "control_variables": {},
+    "observation_variables": {},
+    "selection_summary": {
+        "spatial_channels": [
+            "PRES",
+            "PERMI",
+            "TEMP",
+            "VPOROSGEO"
+        ],
+        "control_variables": [],
+        "observation_variables": [],
+        "training_channels": [
+            "PRES",
+            "PERMI",
+            "TEMP",
+            "VPOROSGEO"
+        ]
+    },
+    "metadata": {
+        "created_timestamp": "20260128_000848",
+        "source": "RL Configuration Dashboard - Dynamic Structure",
+        "structure": "Spatial: PRES, PERMI, TEMP, VPOROSGEO, Controls: , Observations: ",
+        "normalization_method": "training_only_parameters",
+        "data_leakage": "eliminated"
+    }
+}

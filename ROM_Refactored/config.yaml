@@ -3,11 +3,11 @@ data_preprocessing:
     data_dir: sr3_batch_output/
     processed_data_dir: ./processed_data/
     normalization_params_dir: ./processed_data/
-  processing: &id001
+  processing: &id003
     nsteps: 2
     train_split_ratio: 0.75
     random_seed: 42
-  normalization: &id002
+  normalization: &id004
     default_spatial_normalization: log
     default_timeseries_normalization: minmax
     spatial_datasets:
@@ -76,6 +76,23 @@ data:
       - 24
   observations:
     variables:
+      WATRATRC:
+        name: WATRATRC
+        display_name: Water Production Rate
+        unit: kg/s
+        unit_display: bbl/day
+        unit_conversion: 0.00838641
+        indices:
+        - 0
+        - 1
+        - 2
+        well_type: producers
+        num_wells: 3
+        well_names: &id001
+        - Prod1
+        - Prod2
+        - Prod3
+        group_name: Water Production (All Producers)
       BHP:
         name: BHP
         display_name: Bottom-Hole Pressure
@@ -83,15 +100,15 @@ data:
         unit_display: psi
         unit_conversion: 6894.76
         indices:
-        - 0
-        - 1
-        - 2
+        - 3
+        - 4
+        - 5
         well_type: injectors
         num_wells: 3
-        well_names:
-        - Inj1
-        - Inj2
-        - Inj3
+        well_names: &id002
+        - Inj4
+        - Inj5
+        - Inj6
         group_name: BHP (All Injectors)
       ENERGYRATE:
         name: ENERGYRATE
@@ -100,40 +117,32 @@ data:
         unit_display: BTU/Day
         unit_conversion: 0.000293071
         indices:
-        - 3
-        - 4
-        - 5
-        well_type: producers
-        num_wells: 3
-        well_names:
-        - Prod1
-        - Prod2
-        - Prod3
-        group_name: Energy Production (All Producers)
-      WATRATRC:
-        name: WATRATRC
-        display_name: Water Production Rate
-        unit: kg/s
-        unit_display: bbl/day
-        unit_conversion: 0.00838641
-        indices:
         - 6
         - 7
         - 8
         well_type: producers
         num_wells: 3
         well_names:
-        - Prod1
-        - Prod2
-        - Prod3
-        group_name: Water Production (All Producers)
+        - P1
+        - P2
+        - P3
+        group_name: Energy Production (All Producers)
     order:
+    - WATRATRC
     - BHP
     - ENERGYRATE
-    - WATRATRC
     num_observations: 9
   controls:
     variables:
+      WATRATRC:
+        name: WATRATRC
+        display_name: Water Production Rate
+        unit: kg/s
+        unit_display: bbl/day
+        unit_conversion: 0.00838641
+        well_type: producers
+        num_wells: 3
+        well_names: *id001
       BHP:
         name: BHP
         display_name: Bottom-Hole Pressure
@@ -142,11 +151,9 @@ data:
         unit_conversion: 6894.76
         well_type: injectors
         num_wells: 3
-        well_names:
-        - Inj1
-        - Inj2
-        - Inj3
+        well_names: *id002
     order:
+    - WATRATRC
     - BHP
     num_controls: 6
 encoder:
@@ -501,5 +508,5 @@ experiment:
   seed: 42
   gradient_clip: 2.0
   early_stopping_patience: 50
-data_preprocessing_processing: *id001
-data_preprocessing_normalization: *id002
+data_preprocessing_processing: *id003
+data_preprocessing_normalization: *id004

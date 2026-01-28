@@ -632,7 +632,7 @@ class DataPreprocessingDashboard:
             self.control_checkboxes[var_name] = {}
             
             for well_idx in range(num_wells):
-                # Set default selections for controls based on config
+                # Set default selections for controls based on ROM config controls section
                 default_selected = False
                 
                 # Get well type mapping from config
@@ -640,22 +640,74 @@ class DataPreprocessingDashboard:
                 well_type = var_mapping.get('well_type', '')
                 num_var_wells = var_mapping.get('num_wells', 0)
                 
-                if well_type == 'injectors' and num_var_wells > 0:
-                    # For injector variables, select first num_var_wells wells
+                # Check ROM config controls section to see if this variable is a control
+                is_control = False
+                control_well_indices = []
+                try:
+                    if self.config and hasattr(self.config, 'data'):
+                        controls_config = self.config.data.get('controls', {})
+                        if controls_config and 'variables' in controls_config:
+                            control_vars = controls_config['variables']
+                            if var_name in control_vars:
+                                is_control = True
+                                control_var_config = control_vars[var_name]
+                                # Get which wells are selected for this control from ROM config
+                                # We need to map well_names to well indices
+                                control_well_names = control_var_config.get('well_names', [])
+                                control_well_type = control_var_config.get('well_type', '')
+                                
+                                # Get well names from well_locations to map to indices
+                                well_locations = self.config.data.get('well_locations', {})
+                                if control_well_type == 'injectors' and 'injectors' in well_locations:
+                                    injector_names = sorted(well_locations['injectors'].keys())
+                                    for i, name in enumerate(injector_names):
+                                        if name in control_well_names:
+                                            control_well_indices.append(i)
+                                elif control_well_type == 'producers' and 'producers' in well_locations:
+                                    producer_names = sorted(well_locations['producers'].keys())
+                                    num_injectors = len(well_locations.get('injectors', {}))
+                                    for i, name in enumerate(producer_names):
+                                        if name in control_well_names:
+                                            control_well_indices.append(num_injectors + i)
+                except Exception:
+                    pass  # Fallback to default logic below
+                
+                # Get number of injectors and producers for default logic
+                num_injectors = 3  # Default assumption
+                num_producers = 3  # Default assumption
+                try:
+                    if self.config and hasattr(self.config, 'data'):
+                        well_locations = self.config.data.get('well_locations', {})
+                        if 'injectors' in well_locations:
+                            num_injectors = len(well_locations['injectors'])
+                        if 'producers' in well_locations:
+                            num_producers = len(well_locations['producers'])
+                except Exception:
+                    pass
+                
+                # Priority 1: Use ROM config controls if available
+                if is_control and control_well_indices:
+                    if well_idx in control_well_indices:
+                        default_selected = True
+                # Priority 2: Default controls based on user requirement:
+                # - WATRATRC (Water Rate) for injectors: select first num_injectors wells (indices 0 to num_injectors-1)
+                # - BHP for producers: select last num_producers wells (indices num_injectors to num_injectors+num_producers-1)
+                elif var_name == 'WATRATRC':
+                    # WATRATRC defaults to injectors (first wells)
+                    if well_idx < num_injectors:
+                        default_selected = True
+                elif var_name == 'BHP':
+                    # BHP defaults to producers (last wells)
+                    if well_idx >= max(0, num_wells - num_producers):
+                        default_selected = True
+                # Priority 3: Use well_type mapping from config for other variables
+                elif well_type == 'injectors' and num_var_wells > 0:
+                    # For other injector variables, select first num_var_wells wells
                     if well_idx < num_var_wells:
                         default_selected = True
                 elif well_type == 'producers' and num_var_wells > 0:
-                    # For producer variables, select last num_var_wells wells
+                    # For other producer variables, select last num_var_wells wells
                     if well_idx >= max(0, num_wells - num_var_wells):
-                        default_selected = True
-                else:
-                    # Fallback to hard-coded defaults if config not available
-                    # - BHP: last 3 wells should be checked
-                    # - ENERGYRATE: first 3 wells should be checked
-                    # - WATRATRC: no wells should be checked
-                    if var_name == 'BHP' and well_idx >= max(0, num_wells - 3):  # BHP last 3 wells
-                        default_selected = True
-                    elif var_name == 'ENERGYRATE' and well_idx < 3:  # ENERGYRATE first 3 wells
                         default_selected = True
                 
                 checkbox = widgets.Checkbox(
@@ -817,8 +869,321 @@ class DataPreprocessingDashboard:
                 # Collect metadata for timing log
                 timer.metadata = collect_processing_metadata(self)
             
+            # Update ROM config file with selected controls and observations
+            print("\n📝 Updating ROM config file with selected controls and observations...")
+            rom_config_updated = self._update_rom_config_file()
+            if rom_config_updated:
+                print("   ✅ ROM config file updated successfully!")
+            else:
+                print("   ⚠️ Could not update ROM config file (non-critical)")
+            
             # Automatically assign processed data to global variables
             self.assign_to_globals()
+    
+    def _update_rom_config_file(self):
+        """
+        Update ROM_Refactored/config.yaml with selected controls and observations from dashboard
+        
+        Returns:
+            bool: True if update was successful, False otherwise
+        """
+        try:
+            from pathlib import Path
+            
+            # Get ROM config path (same directory as this file)
+            current_dir = Path(__file__).parent.parent
+            rom_config_path = current_dir / 'config.yaml'
+            
+            if not rom_config_path.exists():
+                print(f"   ⚠️ ROM config file not found at {rom_config_path}")
+                return False
+            
+            # Load current ROM config
+            with open(rom_config_path, 'r', encoding='utf-8') as f:
+                rom_config = yaml.safe_load(f)
+            
+            # Get selected controls and observations
+            selected_controls = self.selected_controls
+            selected_observations = self.selected_observations
+            
+            # Get variable definitions from well_type_mappings or config
+            all_vars = {}
+            
+            # Load from config if available
+            if 'data' in rom_config:
+                controls_config = rom_config['data'].get('controls', {})
+                observations_config = rom_config['data'].get('observations', {})
+                if controls_config and 'variables' in controls_config:
+                    all_vars.update(controls_config['variables'])
+                if observations_config and 'variables' in observations_config:
+                    all_vars.update(observations_config['variables'])
+            
+            # Also use well_type_mappings if available
+            if hasattr(self, 'well_type_mappings'):
+                for var_name, mapping in self.well_type_mappings.items():
+                    if var_name not in all_vars:
+                        # Create basic definition from mapping
+                        all_vars[var_name] = {
+                            'name': var_name,
+                            'display_name': mapping.get('display_name', var_name),
+                            'unit': mapping.get('unit', ''),
+                            'unit_display': mapping.get('unit_display', ''),
+                            'unit_conversion': mapping.get('unit_conversion', 1.0),
+                            'well_type': mapping.get('well_type', 'unknown'),
+                            'num_wells': mapping.get('num_wells', 0),
+                            'well_names': mapping.get('well_names', [])
+                        }
+            
+            # Ensure data section exists
+            if 'data' not in rom_config:
+                rom_config['data'] = {}
+            
+            # Get well names from config well_locations
+            well_names_map = {}
+            num_injectors = 0
+            num_producers = 0
+            if 'data' in rom_config and 'well_locations' in rom_config['data']:
+                well_locations = rom_config['data']['well_locations']
+                # Get injector names
+                if 'injectors' in well_locations:
+                    injector_names = sorted(well_locations['injectors'].keys())
+                    well_names_map['injectors'] = injector_names
+                    num_injectors = len(injector_names)
+                # Get producer names
+                if 'producers' in well_locations:
+                    producer_names = sorted(well_locations['producers'].keys())
+                    well_names_map['producers'] = producer_names
+                    num_producers = len(producer_names)
+            
+            # Update controls section
+            controls_variables = {}
+            controls_order = []
+            num_controls = 0
+            current_control_index = 0  # Track indices for controls
+            
+            # Sort controls by well_type: injectors first, then producers
+            # This ensures WATRATRC (injectors) gets indices [0,1,2] and BHP (producers) gets [3,4,5]
+            def get_well_type_for_sorting(var_name, config):
+                """Determine well_type for sorting purposes"""
+                selected_wells = config.get('wells', [])
+                if not selected_wells:
+                    return 'unknown'
+                # Check if wells are injectors (first wells) or producers (last wells)
+                if max(selected_wells) < num_injectors:
+                    return 'injectors'
+                elif min(selected_wells) >= num_injectors:
+                    return 'producers'
+                # Fallback: use variable name
+                if var_name == 'WATRATRC':
+                    return 'injectors'
+                elif var_name == 'BHP':
+                    return 'producers'
+                return 'unknown'
+            
+            # Sort selected_controls: injectors first, then producers
+            sorted_controls = sorted(
+                selected_controls.items(),
+                key=lambda x: (0 if get_well_type_for_sorting(x[0], x[1]) == 'injectors' else 1, x[0])
+            )
+            
+            for var_name, config in sorted_controls:
+                selected_wells = config.get('wells', [])
+                if not selected_wells:
+                    continue  # Skip if no wells selected
+                    
+                if var_name in all_vars:
+                    var_def = all_vars[var_name].copy()
+                else:
+                    # Create basic definition from well_type_mappings
+                    mapping = self.well_type_mappings.get(var_name, {})
+                    var_def = {
+                        'name': var_name,
+                        'display_name': mapping.get('display_name', var_name),
+                        'unit': mapping.get('unit', ''),
+                        'unit_display': mapping.get('unit_display', ''),
+                        'unit_conversion': mapping.get('unit_conversion', 1.0),
+                        'well_type': mapping.get('well_type', 'unknown'),
+                        'num_wells': len(selected_wells),
+                        'well_names': []
+                    }
+                
+                # Remove observation-specific fields (but keep indices for controls)
+                var_def.pop('group_name', None)
+                
+                # Determine well_type based on selected_wells indices, not from old config
+                # This ensures correct mapping: injectors = first wells, producers = last wells
+                num_wells = len(selected_wells)
+                var_def['num_wells'] = num_wells
+                
+                # Determine well_type from selected_wells indices
+                # If selected_wells are in range [0, num_injectors-1] → injectors
+                # If selected_wells are in range [num_injectors, num_injectors+num_producers-1] → producers
+                if selected_wells and max(selected_wells) < num_injectors:
+                    # All selected wells are injectors (indices 0 to num_injectors-1)
+                    well_type = 'injectors'
+                elif selected_wells and min(selected_wells) >= num_injectors:
+                    # All selected wells are producers (indices num_injectors and above)
+                    well_type = 'producers'
+                else:
+                    # Mixed or unknown - try to infer from var_name and default behavior
+                    # WATRATRC typically for injectors, BHP typically for producers (based on user requirement)
+                    if var_name == 'WATRATRC':
+                        well_type = 'injectors'  # Water rate for injectors
+                    elif var_name == 'BHP':
+                        well_type = 'producers'  # BHP for producers
+                    else:
+                        # Fallback to old well_type from config
+                        well_type = var_def.get('well_type', 'unknown')
+                
+                # Update well_type in var_def
+                var_def['well_type'] = well_type
+                
+                # Get well names FIRST based on determined well_type and selected_wells
+                # This ensures we get the correct well names before calculating indices
+                if well_type == 'injectors' and 'injectors' in well_names_map:
+                    # selected_wells for injectors should be [0, 1, 2] -> map to injector names
+                    injector_names = well_names_map['injectors']
+                    var_def['well_names'] = [injector_names[i] if i < len(injector_names) else f'Inj{i+1}' for i in selected_wells]
+                elif well_type == 'producers' and 'producers' in well_names_map:
+                    # selected_wells for producers should be [3, 4, 5] -> map to producer names
+                    # Need to subtract num_injectors to get producer index
+                    producer_names = well_names_map['producers']
+                    var_def['well_names'] = [producer_names[i - num_injectors] if (i - num_injectors) < len(producer_names) and (i - num_injectors) >= 0 else f'Prod{i+1}' for i in selected_wells]
+                elif 'well_names' in var_def and selected_wells and len(var_def['well_names']) >= max(selected_wells) + 1:
+                    # Use existing well_names if available and indices are valid
+                    var_def['well_names'] = [var_def['well_names'][i] if i < len(var_def['well_names']) else f'Well{i+1}' for i in selected_wells]
+                else:
+                    # Fallback: generate generic names
+                    var_def['well_names'] = [f'Well{i+1}' for i in selected_wells]
+                
+                # Calculate and set indices for controls (similar to observations)
+                # Indices are sequential in the control tensor: [0,1,2] for first control, [3,4,5] for second, etc.
+                var_def['indices'] = list(range(current_control_index, current_control_index + num_wells))
+                current_control_index += num_wells
+                
+                # If well_names weren't set above, try fallback methods
+                if 'well_names' not in var_def or not var_def['well_names']:
+                    if 'well_names' in var_def and selected_wells and len(var_def['well_names']) >= max(selected_wells) + 1:
+                        # Use existing well_names if available and indices are valid
+                        var_def['well_names'] = [var_def['well_names'][i] if i < len(var_def['well_names']) else f'Well{i+1}' for i in selected_wells]
+                    else:
+                        # Fallback: generate generic names
+                        var_def['well_names'] = [f'Well{i+1}' for i in selected_wells]
+                
+                # Ensure required fields
+                if 'name' not in var_def:
+                    var_def['name'] = var_name
+                controls_variables[var_name] = var_def
+                controls_order.append(var_name)
+                # Count number of wells for this control
+                num_controls += num_wells
+            
+            rom_config['data']['controls'] = {
+                'variables': controls_variables,
+                'order': controls_order,
+                'num_controls': num_controls
+            }
+            
+            # Debug: Print what was saved
+            print(f"   📝 DEBUG: Saved controls order: {controls_order}")
+            for var_name in controls_order:
+                if var_name in controls_variables:
+                    var_cfg = controls_variables[var_name]
+                    print(f"      {var_name}: well_type={var_cfg.get('well_type')}, well_names={var_cfg.get('well_names')}, indices={var_cfg.get('indices')}")
+            
+            # Update observations section
+            observations_variables = {}
+            observations_order = []
+            num_observations = 0
+            current_index = 0
+            
+            for var_name, config in selected_observations.items():
+                selected_wells = config.get('wells', [])
+                if not selected_wells:
+                    continue  # Skip if no wells selected
+                    
+                if var_name in all_vars:
+                    var_def = all_vars[var_name].copy()
+                else:
+                    # Create basic definition from well_type_mappings
+                    mapping = self.well_type_mappings.get(var_name, {})
+                    var_def = {
+                        'name': var_name,
+                        'display_name': mapping.get('display_name', var_name),
+                        'unit': mapping.get('unit', ''),
+                        'unit_display': mapping.get('unit_display', ''),
+                        'unit_conversion': mapping.get('unit_conversion', 1.0),
+                        'well_type': mapping.get('well_type', 'unknown'),
+                        'num_wells': len(selected_wells),
+                        'well_names': mapping.get('well_names', [f'Well{i+1}' for i in selected_wells])
+                    }
+                
+                # Ensure required fields
+                if 'name' not in var_def:
+                    var_def['name'] = var_name
+                # Calculate and set indices correctly
+                num_wells = len(selected_wells)
+                var_def['indices'] = list(range(current_index, current_index + num_wells))
+                current_index += num_wells
+                num_observations += num_wells
+                # Update num_wells and well_names based on selected wells
+                var_def['num_wells'] = num_wells
+                
+                # Map selected_wells indices to actual well names based on well_type
+                well_type = var_def.get('well_type', 'unknown')
+                
+                # Get well names based on well_type
+                if well_type == 'injectors' and 'injectors' in well_names_map:
+                    # selected_wells for injectors should be [0, 1, 2] -> map to injector names
+                    injector_names = well_names_map['injectors']
+                    var_def['well_names'] = [injector_names[i] if i < len(injector_names) else f'Inj{i+1}' for i in selected_wells]
+                elif well_type == 'producers' and 'producers' in well_names_map:
+                    # selected_wells for producers should be [3, 4, 5] -> map to producer names
+                    # Need to subtract num_injectors to get producer index
+                    producer_names = well_names_map['producers']
+                    var_def['well_names'] = [producer_names[i - num_injectors] if (i - num_injectors) < len(producer_names) and (i - num_injectors) >= 0 else f'Prod{i+1}' for i in selected_wells]
+                elif 'well_names' in var_def and len(var_def['well_names']) >= max(selected_wells) + 1:
+                    # Use existing well_names if available and indices are valid
+                    var_def['well_names'] = [var_def['well_names'][i] if i < len(var_def['well_names']) else f'Well{i+1}' for i in selected_wells]
+                elif var_name in self.well_type_mappings:
+                    mapping = self.well_type_mappings[var_name]
+                    all_well_names = mapping.get('well_names', [])
+                    if all_well_names and selected_wells and len(all_well_names) >= max(selected_wells) + 1:
+                        var_def['well_names'] = [all_well_names[i] if i < len(all_well_names) else f'Well{i+1}' for i in selected_wells]
+                    else:
+                        var_def['well_names'] = [f'Well{i+1}' for i in selected_wells]
+                else:
+                    # Fallback: generate generic names
+                    var_def['well_names'] = [f'Well{i+1}' for i in selected_wells]
+                # Preserve group_name if it exists, otherwise create one
+                if 'group_name' not in var_def:
+                    well_type = var_def.get('well_type', 'Wells')
+                    display_name = var_def.get('display_name', var_name)
+                    var_def['group_name'] = f'{display_name} (All {well_type.title()})'
+                observations_variables[var_name] = var_def
+                observations_order.append(var_name)
+            
+            rom_config['data']['observations'] = {
+                'variables': observations_variables,
+                'order': observations_order,
+                'num_observations': num_observations
+            }
+            
+            # Save updated config back to file
+            with open(rom_config_path, 'w', encoding='utf-8') as f:
+                yaml.dump(rom_config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            
+            print(f"   📋 Updated controls: {controls_order} (num_controls={num_controls})")
+            print(f"   📋 Updated observations: {observations_order} (num_observations={num_observations})")
+            print(f"   💾 Saved to: {rom_config_path}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"   ❌ Error updating ROM config: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
     
     def _save_normalization_parameters(self):
         """Save normalization parameters to a file for later use in evaluation and reproducibility"""

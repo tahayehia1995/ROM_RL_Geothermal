@@ -129,9 +129,9 @@ def apply_training_only_normalization(data, state_name, training_params, device)
     print(f"      📊 Training-only {norm_type.upper()}: [{param_min:.6f}, {param_max:.6f}] → [0, 1]")
     
     # Handle inactive cells for spatial data
-    if state_name in ['SW', 'SG', 'PRES', 'POROS', 'PERMI', 'PERMJ', 'PERMK']:
+    if state_name in ['SW', 'SG', 'PRES', 'POROS', 'PERMI', 'PERMJ', 'PERMK', 'TEMP', 'VPOROSGEO', 'VPOROSTGEO']:
         # Identify inactive cells (same logic as preprocessing)
-        if state_name in ['PRES', 'SW', 'SG', 'POROS']:
+        if state_name in ['PRES', 'SW', 'SG', 'POROS', 'TEMP', 'VPOROSGEO', 'VPOROSTGEO']:
             active_mask = data > 0.0
         elif 'PERM' in state_name:
             active_mask = data > 0.0
@@ -259,9 +259,9 @@ def apply_preprocessing_normalization(data, state_name, norm_params, norm_type, 
         param_max = float(norm_params.get('max', 1.0))
         
         # Handle inactive cells for spatial data
-        if state_name in ['SW', 'SG', 'PRES', 'POROS', 'PERMI', 'PERMJ', 'PERMK']:
+        if state_name in ['SW', 'SG', 'PRES', 'POROS', 'PERMI', 'PERMJ', 'PERMK', 'TEMP', 'VPOROSGEO', 'VPOROSTGEO']:
             # Identify inactive cells (same logic as preprocessing)
-            if state_name in ['PRES', 'SW', 'SG', 'POROS']:
+            if state_name in ['PRES', 'SW', 'SG', 'POROS', 'TEMP', 'VPOROSGEO', 'VPOROSTGEO']:
                 active_mask = data > 0.0
                 inactive_marker = -0.145038 if state_name == 'PRES' else -1.0
             elif 'PERM' in state_name:
@@ -316,14 +316,14 @@ def apply_emergency_fallback_normalization(data, state_name, device):
         scaled_data = torch.zeros_like(data)
     return scaled_data.to(device)
 
-def calculate_training_only_normalization_params(data_dir=None):
+def calculate_training_only_normalization_params(data_dir=None, selected_states=None):
     """
     Calculate normalization parameters from training split only
     This replicates exactly what was done during training
-    EXACT COPY from corrected_model_test.py for perfect compatibility
     
     Args:
         data_dir: Directory containing H5 files (if None, uses config default)
+        selected_states: List of state names to load (if None, tries to detect from available files)
     """
     # If data_dir not provided, try to get from config
     if data_dir is None:
@@ -340,74 +340,86 @@ def calculate_training_only_normalization_params(data_dir=None):
         except Exception:
             data_dir = 'sr3_batch_output'
     
-    # Ensure trailing slash for consistency
-    if data_dir and not data_dir.endswith('/'):
-        data_dir = data_dir + '/'
+    # Normalize path (remove double slashes and ensure proper separator)
+    data_dir = os.path.normpath(data_dir)
+    # Ensure trailing separator for consistency
+    if not data_dir.endswith(os.sep):
+        data_dir = data_dir + os.sep
+    # Replace double slashes with single separator
+    data_dir = data_dir.replace('//', os.sep).replace('\\\\', os.sep)
+    
     print("🔍 Calculating training normalization parameters from training split only...")
     print("   🎯 This ensures no data leakage by using only training data for normalization")
     
     import h5py
     import numpy as np
+    import glob
     
     # Load full dataset
     def load_raw_data(filepath, var_name):
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"File not found: {filepath}")
         with h5py.File(filepath, 'r') as hf:
             data = np.array(hf['data'])
         print(f"  📊 {var_name}: {data.shape}")
         return data
     
-    # Load all raw data - including PERMI and POROS for RL compatibility
-    print("  🔄 Loading raw data files...")
-    sw_raw = load_raw_data(f"{data_dir}/batch_spatial_properties_SW.h5", "SW")
-    sg_raw = load_raw_data(f"{data_dir}/batch_spatial_properties_SG.h5", "SG") 
-    pres_raw = load_raw_data(f"{data_dir}/batch_spatial_properties_PRES.h5", "PRES")
+    # Determine which states to load
+    if selected_states is None:
+        # Try to detect available state files
+        print("  🔄 Detecting available state files...")
+        state_files = glob.glob(os.path.join(data_dir, 'batch_spatial_properties_*.h5'))
+        selected_states = []
+        for state_file in state_files:
+            filename = os.path.basename(state_file)
+            state_name = filename.replace('batch_spatial_properties_', '').replace('.h5', '')
+            selected_states.append(state_name)
+        print(f"  ✅ Detected states: {selected_states}")
     
-    # Load additional spatial properties for RL compatibility
-    try:
-        permi_raw = load_raw_data(f"{data_dir}/batch_spatial_properties_PERMI.h5", "PERMI")
-        has_permi = True
-    except FileNotFoundError:
-        print(f"  ⚠️ PERMI file not found - skipping")
-        has_permi = False
+    if not selected_states:
+        print("  ⚠️ No state files found or selected!")
+        return {}
     
-    try:
-        poros_raw = load_raw_data(f"{data_dir}/batch_spatial_properties_POROS.h5", "POROS")
-        has_poros = True
-    except FileNotFoundError:
-        print(f"  ⚠️ POROS file not found - skipping")
-        has_poros = False
+    # Load selected state data files dynamically
+    print(f"  🔄 Loading {len(selected_states)} state data files...")
+    state_data = {}
+    for state_name in selected_states:
+        state_file = os.path.join(data_dir, f'batch_spatial_properties_{state_name}.h5')
+        try:
+            state_data[state_name] = load_raw_data(state_file, state_name)
+        except FileNotFoundError:
+            print(f"  ⚠️ {state_name} file not found - skipping")
     
-    try:
-        permj_raw = load_raw_data(f"{data_dir}/batch_spatial_properties_PERMJ.h5", "PERMJ")
-        has_permj = True
-    except FileNotFoundError:
-        print(f"  ⚠️ PERMJ file not found - skipping")
-        has_permj = False
+    if not state_data:
+        print("  ❌ No state data files could be loaded!")
+        return {}
     
-    try:
-        permk_raw = load_raw_data(f"{data_dir}/batch_spatial_properties_PERMK.h5", "PERMK")
-        has_permk = True
-    except FileNotFoundError:
-        print(f"  ⚠️ PERMK file not found - skipping")
-        has_permk = False
+    # Use first state to determine sample count
+    first_state = list(state_data.keys())[0]
+    n_sample = state_data[first_state].shape[0]
     
-    # Load timeseries data
-    bhp_raw = load_raw_data(f"{data_dir}/batch_timeseries_data_BHP.h5", "BHP")
-    gas_raw = load_raw_data(f"{data_dir}/batch_timeseries_data_ENERGYRATE.h5", "ENERGYRATE")
-    water_raw = load_raw_data(f"{data_dir}/batch_timeseries_data_WATRATRC.h5", "WATRATRC")
+    # Load timeseries data (for controls/observations normalization)
+    timeseries_data = {}
+    timeseries_vars = ['BHP', 'ENERGYRATE', 'WATRATRC']
+    for var_name in timeseries_vars:
+        timeseries_file = os.path.join(data_dir, f'batch_timeseries_data_{var_name}.h5')
+        try:
+            timeseries_data[var_name] = load_raw_data(timeseries_file, var_name)
+        except FileNotFoundError:
+            print(f"  ⚠️ {var_name} timeseries file not found - skipping")
     
     # Apply EXACT same train/test split as training
-    n_sample = sw_raw.shape[0]
     num_train = int(0.8 * n_sample)  # Same 80/20 split as training
     print(f"  📊 Total samples: {n_sample}, Training samples: {num_train}")
     
     # Extract TRAINING data only for normalization calculation
-    sw_train = sw_raw[:num_train]
-    sg_train = sg_raw[:num_train] 
-    pres_train = pres_raw[:num_train]
-    bhp_train = bhp_raw[:num_train]
-    gas_train = gas_raw[:num_train]
-    water_train = water_raw[:num_train]
+    state_train_data = {}
+    for state_name, state_raw in state_data.items():
+        state_train_data[state_name] = state_raw[:num_train]
+    
+    timeseries_train_data = {}
+    for var_name, var_raw in timeseries_data.items():
+        timeseries_train_data[var_name] = var_raw[:num_train]
     
     print("  🔧 Calculating normalization parameters from TRAINING DATA ONLY...")
     
@@ -418,39 +430,26 @@ def calculate_training_only_normalization_params(data_dir=None):
         print(f"    📏 {name}: [{data_min:.8f}, {data_max:.8f}]")
         return {'min': data_min, 'max': data_max, 'type': 'minmax'}
     
-    training_norm_params = {
-        'SW': calc_norm_params(sw_train, 'SW'),
-        'SG': calc_norm_params(sg_train, 'SG'),
-        'PRES': calc_norm_params(pres_train, 'PRES'),
-        'BHP': calc_norm_params(bhp_train, 'BHP'),
-        'ENERGYRATE': calc_norm_params(gas_train, 'ENERGYRATE'),
-        'WATRATRC': calc_norm_params(water_train, 'WATRATRC')
-    }
+    # Calculate normalization for all loaded states
+    training_norm_params = {}
+    for state_name, state_train in state_train_data.items():
+        training_norm_params[state_name] = calc_norm_params(state_train, state_name)
     
-    # Add additional spatial properties if available
-    if has_permi:
-        permi_train = permi_raw[:num_train]
-        training_norm_params['PERMI'] = calc_norm_params(permi_train, 'PERMI')
-    
-    if has_poros:
-        poros_train = poros_raw[:num_train]
-        training_norm_params['POROS'] = calc_norm_params(poros_train, 'POROS')
-    
-    if has_permj:
-        permj_train = permj_raw[:num_train]
-        training_norm_params['PERMJ'] = calc_norm_params(permj_train, 'PERMJ')
-    
-    if has_permk:
-        permk_train = permk_raw[:num_train]
-        training_norm_params['PERMK'] = calc_norm_params(permk_train, 'PERMK')
+    # Calculate normalization for timeseries variables
+    for var_name, var_train in timeseries_train_data.items():
+        training_norm_params[var_name] = calc_norm_params(var_train, var_name)
     
     print("✅ Training normalization parameters calculated!")
     return training_norm_params
 
-def save_normalization_parameters_for_rl(training_norm_params):
+def save_normalization_parameters_for_rl(training_norm_params, rom_config_path=None):
     """
     Save normalization parameters in the format expected by RL training
     This ensures compatibility between E2C evaluation and RL training
+    
+    Args:
+        training_norm_params: Dictionary of normalization parameters calculated from training data
+        rom_config_path: Optional path to ROM config.yaml to get control/observation definitions
     """
     print("💾 Saving normalization parameters for RL training compatibility...")
     
@@ -458,99 +457,142 @@ def save_normalization_parameters_for_rl(training_norm_params):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"normalization_parameters_{timestamp}.json"
     
-    # Create the structure expected by RL training - FIXED STRUCTURE
+    # Separate spatial channels from timeseries variables
+    # Spatial channels are typically: PRES, PERMI, TEMP, VPOROSGEO, SW, SG, POROS, PERMJ, PERMK
+    spatial_channel_names = []
+    timeseries_vars = []
+    
+    # Known spatial properties (from ROM config)
+    known_spatial = ['PRES', 'PERMI', 'PERMJ', 'PERMK', 'TEMP', 'VPOROSGEO', 'VPOROSTGEO', 'SW', 'SG', 'POROS']
+    known_timeseries = ['BHP', 'ENERGYRATE', 'WATRATRC']
+    
+    for var_name in training_norm_params.keys():
+        if var_name in known_spatial:
+            spatial_channel_names.append(var_name)
+        elif var_name in known_timeseries:
+            timeseries_vars.append(var_name)
+        else:
+            # Default: assume spatial if not a known timeseries variable
+            # This ensures we don't miss any spatial channels
+            if var_name not in known_timeseries:
+                spatial_channel_names.append(var_name)
+    
+    # Ensure all known timeseries variables are included if they exist in training_norm_params
+    for var_name in known_timeseries:
+        if var_name in training_norm_params and var_name not in timeseries_vars:
+            timeseries_vars.append(var_name)
+    
+    # Load ROM config to get control/observation definitions
+    control_vars = {}
+    observation_vars = {}
+    
+    if rom_config_path and os.path.exists(rom_config_path):
+        try:
+            import yaml
+            with open(rom_config_path, 'r') as f:
+                rom_config = yaml.safe_load(f)
+            
+            # Get controls
+            if 'data' in rom_config and 'controls' in rom_config['data']:
+                controls_section = rom_config['data']['controls']
+                if 'variables' in controls_section:
+                    for var_name, var_def in controls_section['variables'].items():
+                        if var_name in training_norm_params:
+                            control_vars[var_name] = {
+                                'well_names': var_def.get('well_names', []),
+                                'well_type': var_def.get('well_type', 'unknown')
+                            }
+            
+            # Get observations
+            if 'data' in rom_config and 'observations' in rom_config['data']:
+                obs_section = rom_config['data']['observations']
+                if 'variables' in obs_section:
+                    for var_name, var_def in obs_section['variables'].items():
+                        if var_name in training_norm_params:
+                            observation_vars[var_name] = {
+                                'well_names': var_def.get('well_names', []),
+                                'well_type': var_def.get('well_type', 'unknown')
+                            }
+        except Exception as e:
+            print(f"  ⚠️ Could not load ROM config for well names: {e}")
+    
+    # Build spatial_channels section dynamically
+    spatial_channels = {}
+    for var_name in spatial_channel_names:
+        if var_name in training_norm_params:
+            params = training_norm_params[var_name]
+            spatial_channels[var_name] = {
+                "normalization_type": params.get('type', 'minmax'),
+                "selected_for_training": True,
+                "parameters": {
+                    "type": params.get('type', 'minmax'),
+                    "min": str(params['min']),
+                    "max": str(params['max'])
+                }
+            }
+    
+    # Build control_variables section dynamically
+    # Include ALL timeseries variables that exist in training_norm_params
+    # This ensures the environment can find them even if ROM config is incomplete
+    control_variables = {}
+    for var_name in timeseries_vars:
+        if var_name in training_norm_params:
+            params = training_norm_params[var_name]
+            # Get well names from ROM config if available, otherwise use empty list
+            well_names = []
+            if var_name in control_vars:
+                well_names = control_vars[var_name].get('well_names', [])
+            
+            control_variables[var_name] = {
+                "normalization_type": params.get('type', 'minmax'),
+                "selected_wells": well_names,
+                "parameters": {
+                    "type": params.get('type', 'minmax'),
+                    "min": str(params['min']),
+                    "max": str(params['max'])
+                }
+            }
+    
+    # Build observation_variables section dynamically
+    # Include ALL timeseries variables that exist in training_norm_params
+    # Variables can be both controls AND observations (e.g., BHP)
+    observation_variables = {}
+    for var_name in timeseries_vars:
+        if var_name in training_norm_params:
+            params = training_norm_params[var_name]
+            # Get well names from ROM config if available, otherwise use empty list
+            well_names = []
+            if var_name in observation_vars:
+                well_names = observation_vars[var_name].get('well_names', [])
+            
+            # Add to observations even if also in controls (variables can be both)
+            observation_variables[var_name] = {
+                "normalization_type": params.get('type', 'minmax'),
+                "selected_wells": well_names,
+                "parameters": {
+                    "type": params.get('type', 'minmax'),
+                    "min": str(params['min']),
+                    "max": str(params['max'])
+                }
+            }
+    
+    # Create the structure dynamically
     norm_config = {
-        "spatial_channels": {
-            "SW": {
-                "normalization_type": "minmax",
-                "selected_for_training": True,
-                "parameters": {
-                    "type": "minmax",
-                    "min": str(training_norm_params['SW']['min']),
-                    "max": str(training_norm_params['SW']['max'])
-                }
-            },
-            "SG": {
-                "normalization_type": "minmax",
-                "selected_for_training": True,
-                "parameters": {
-                    "type": "minmax", 
-                    "min": str(training_norm_params['SG']['min']),
-                    "max": str(training_norm_params['SG']['max'])
-                }
-            },
-            "PRES": {
-                "normalization_type": "minmax",
-                "selected_for_training": True,
-                "parameters": {
-                    "type": "minmax",
-                    "min": str(training_norm_params['PRES']['min']),
-                    "max": str(training_norm_params['PRES']['max'])
-                }
-            }
-        },
-        "control_variables": {
-            "BHP": {
-                "normalization_type": "minmax",
-                "selected_wells": ["P1", "P2", "P3"],
-                "parameters": {
-                    "type": "minmax",
-                    "min": str(training_norm_params['BHP']['min']),
-                    "max": str(training_norm_params['BHP']['max'])
-                }
-            },
-            "ENERGYRATE": {
-                "normalization_type": "minmax",
-                "selected_wells": ["I1", "I2", "I3"],
-                "parameters": {
-                    "type": "minmax",
-                    "min": str(training_norm_params['ENERGYRATE']['min']),
-                    "max": str(training_norm_params['ENERGYRATE']['max'])
-                }
-            }
-        },
-        "observation_variables": {
-            "BHP": {
-                "normalization_type": "minmax",
-                "selected_wells": ["I1", "I2", "I3"],
-                "parameters": {
-                    "type": "minmax",
-                    "min": str(training_norm_params['BHP']['min']),
-                    "max": str(training_norm_params['BHP']['max'])
-                }
-            },
-            "ENERGYRATE": {
-                "normalization_type": "minmax", 
-                "selected_wells": ["P1", "P2", "P3"],
-                "parameters": {
-                    "type": "minmax",
-                    "min": str(training_norm_params['ENERGYRATE']['min']),
-                    "max": str(training_norm_params['ENERGYRATE']['max'])
-                }
-            },
-            "WATRATRC": {
-                "normalization_type": "minmax",
-                "selected_wells": ["P1", "P2", "P3"],
-                "parameters": {
-                    "type": "minmax",
-                    "min": str(training_norm_params['WATRATRC']['min']),
-                    "max": str(training_norm_params['WATRATRC']['max'])
-                }
-            }
-        },
+        "spatial_channels": spatial_channels,
+        "control_variables": control_variables,
+        "observation_variables": observation_variables,
         "selection_summary": {
-            "spatial_channels": ["SW", "SG", "PRES"],
-            "control_variables": ["BHP", "ENERGYRATE"],
-            "observation_variables": ["BHP", "ENERGYRATE", "WATRATRC"],
-            "training_channels": ["SW", "SG", "PRES"]
+            "spatial_channels": spatial_channel_names,
+            "control_variables": list(control_variables.keys()),
+            "observation_variables": list(observation_variables.keys()),
+            "training_channels": spatial_channel_names
         },
         "metadata": {
             "created_timestamp": timestamp,
-            "source": "RL Configuration Dashboard - Optimal Structure",
-            "structure": "Controls: Producer BHP + Energy Injection, Observations: Injector BHP + Energy Production + Water Production",
+            "source": "RL Configuration Dashboard - Dynamic Structure",
+            "structure": f"Spatial: {', '.join(spatial_channel_names)}, Controls: {', '.join(control_variables.keys())}, Observations: {', '.join(observation_variables.keys())}",
             "normalization_method": "training_only_parameters",
-            "data_leakage": "eliminated",
-            "performance_improvement": "78.4% + 76.2% better than alternatives"
+            "data_leakage": "eliminated"
         }
     }
     
@@ -603,7 +645,7 @@ def apply_dashboard_scaling(data, state_name, rl_config, device):
         return (data - data_min) / (data_max - data_min)
     
     # Handle inactive cells for spatial data (EXACT same logic as corrected_model_test.py)
-    if state_name in ['SW', 'SG', 'PRES', 'POROS', 'PERMI', 'PERMJ', 'PERMK']:
+    if state_name in ['SW', 'SG', 'PRES', 'POROS', 'PERMI', 'PERMJ', 'PERMK', 'TEMP', 'VPOROSGEO', 'VPOROSTGEO']:
         # Identify active cells (same logic as corrected_model_test.py)
         active_mask = data > 0.0
         
@@ -776,14 +818,23 @@ def generate_z0_from_dashboard(rl_config, rom_model, device):
 
     print(f"🏔️ Selected states from dashboard: {selected_states}")
     
-    # 🔧 CRITICAL FIX: Force canonical order to match ROM training exactly
-    ROM_CANONICAL_ORDER = ['SW', 'SG', 'PRES', 'PERMI', 'POROS', 'PERMJ', 'PERMK']
+    # 🔧 CRITICAL FIX: Use training channel order from normalization params (no hard-coding)
+    # Get training channel order from config if available
+    training_channel_order = rl_config.get('training_channel_order', None)
     
-    # Reorder selected states to match ROM training canonical order
-    canonical_selected_states = []
-    for canonical_state in ROM_CANONICAL_ORDER:
-        if canonical_state in selected_states:
-            canonical_selected_states.append(canonical_state)
+    if training_channel_order:
+        # Reorder selected states to match training channel order
+        canonical_selected_states = []
+        for training_state in training_channel_order:
+            if training_state in selected_states:
+                canonical_selected_states.append(training_state)
+        # Add any selected states not in training order (shouldn't happen, but be safe)
+        for state in selected_states:
+            if state not in canonical_selected_states:
+                canonical_selected_states.append(state)
+    else:
+        # Fallback: use selected states as-is if no training order available
+        canonical_selected_states = selected_states.copy()
     
     print(f"🔧 Selected states: {selected_states}")
     print(f"✅ Canonical corrected order: {canonical_selected_states}")
@@ -880,15 +931,16 @@ def generate_z0_from_dashboard(rl_config, rom_model, device):
 
 # Add the auto-detection function before the RLConfigurationDashboard class
 
-def auto_detect_action_ranges_from_h5(data_dir=None):
+def auto_detect_action_ranges_from_h5(data_dir=None, rom_config_path=None):
     """
-    Automatically detect Energy Injection and Producer BHP ranges from H5 files
+    Automatically detect action ranges from H5 files and synchronize with ROM config control definitions
     
     Args:
         data_dir: Directory containing H5 files (if None, uses config default)
+        rom_config_path: Path to ROM config.yaml for control definitions (optional)
     
     Returns:
-        dict: Action ranges detected from H5 files
+        dict: Action ranges detected from H5 files, synchronized with ROM config
     """
     # If data_dir not provided, try to get from config
     if data_dir is None:
@@ -904,9 +956,110 @@ def auto_detect_action_ranges_from_h5(data_dir=None):
                 data_dir = 'sr3_batch_output'
         except Exception:
             data_dir = 'sr3_batch_output'
+    
+    # Import required modules at the top
+    import os
+    from pathlib import Path
+    
+    # Load ROM config control definitions if available
+    control_definitions = {}
+    num_producers = 3  # Default
+    num_injectors = 3  # Default
+    well_names_map = {}  # Maps well type to well names
+    control_order = []  # Initialize control_order
+    
+    if rom_config_path is None:
+        # Try to find ROM config.yaml
+        current_dir = Path(__file__).parent.parent.parent
+        rom_config_path = current_dir / 'ROM_Refactored' / 'config.yaml'
+    
+    if os.path.exists(rom_config_path):
+        try:
+            import yaml
+            with open(rom_config_path, 'r') as f:
+                rom_config = yaml.safe_load(f)
+            
+            # Load control definitions
+            controls_config = rom_config.get('data', {}).get('controls', {})
+            if controls_config and 'variables' in controls_config:
+                # IMPORTANT: Store the FULL control_vars dict (not just selected fields)
+                # This preserves all fields including indices, well_names, etc.
+                control_vars = controls_config['variables'].copy()  # Make a copy to preserve original
+                control_order = controls_config.get('order', [])
+                
+                for var_name in control_order:
+                    if var_name in control_vars:
+                        var_config = control_vars[var_name]
+                        well_type = var_config.get('well_type', '')
+                        num_wells = var_config.get('num_wells', 0)
+                        well_names = var_config.get('well_names', [])
+                        
+                        control_definitions[var_name] = {
+                            'well_type': well_type,
+                            'num_wells': num_wells,
+                            'well_names': well_names
+                        }
+                        
+                        if well_type == 'producers':
+                            num_producers = num_wells
+                            well_names_map['producers'] = well_names
+                        elif well_type == 'injectors':
+                            num_injectors = num_wells
+                            well_names_map['injectors'] = well_names
+            
+            # Also load well names from well_locations if not found in controls
+            well_locations = rom_config.get('data', {}).get('well_locations', {})
+            if well_locations:
+                # Load producer well names from well_locations
+                if 'producers' in well_locations and not well_names_map.get('producers'):
+                    producer_names = list(well_locations['producers'].keys())
+                    well_names_map['producers'] = producer_names
+                    num_producers = len(producer_names)
+                
+                # Load injector well names from well_locations
+                if 'injectors' in well_locations and not well_names_map.get('injectors'):
+                    injector_names = list(well_locations['injectors'].keys())
+                    well_names_map['injectors'] = injector_names
+                    num_injectors = len(injector_names)
+            
+            # Load observations to show what are controls vs observations
+            observations_config = rom_config.get('data', {}).get('observations', {})
+            obs_vars = {}
+            obs_order = []
+            if observations_config and 'variables' in observations_config:
+                obs_vars = observations_config['variables']
+                obs_order = observations_config.get('order', [])
+            
+            # Print summary of controls and observations
+            print(f"   ✅ Loaded control definitions from ROM config:")
+            print(f"      Producers: {num_producers} wells ({well_names_map.get('producers', [])})")
+            print(f"      Injectors: {num_injectors} wells ({well_names_map.get('injectors', [])})")
+            print(f"\n   📋 CONTROLS (from ROM config):")
+            for var_name in control_order:
+                if var_name in control_vars:
+                    var_config = control_vars[var_name]
+                    well_type = var_config.get('well_type', 'unknown')
+                    well_names = var_config.get('well_names', [])
+                    unit_display = var_config.get('unit_display', '')
+                    display_name = var_config.get('display_name', var_name)
+                    print(f"      • {var_name} ({display_name}): {well_type} - wells {well_names} ({unit_display})")
+            
+            print(f"\n   📊 OBSERVATIONS (from ROM config):")
+            for var_name in obs_order:
+                if var_name in obs_vars:
+                    var_config = obs_vars[var_name]
+                    well_type = var_config.get('well_type', 'unknown')
+                    well_names = var_config.get('well_names', [])
+                    unit_display = var_config.get('unit_display', '')
+                    display_name = var_config.get('display_name', var_name)
+                    indices = var_config.get('indices', [])
+                    print(f"      • {var_name} ({display_name}): {well_type} - wells {well_names} ({unit_display}) - indices {indices}")
+        except Exception as e:
+            print(f"   ⚠️ Could not load ROM config control definitions: {e}")
+            print(f"   💡 Using defaults: {num_producers} producers, {num_injectors} injectors")
     detected_ranges = {
-        'gas_inj_min': 24720290.0,    # Default fallback values
-        'gas_inj_max': 100646896.0,
+        'water_inj_min': 0.0,    # Default fallback values for water injection
+        'water_inj_max': 1000.0,
         'bhp_min': 1087.78,
         'bhp_max': 1305.34,
         'detection_successful': False,
@@ -921,93 +1074,340 @@ def auto_detect_action_ranges_from_h5(data_dir=None):
         print("🔍 AUTO-DETECTING ACTION RANGES FROM H5 FILES...")
         print("=" * 60)
         
-                 # Check for ENERGYRATE file (energy injection rates)
-        gas_file = os.path.join(data_dir, 'batch_timeseries_data_ENERGYRATE.h5')
-        if os.path.exists(gas_file):
-            with h5py.File(gas_file, 'r') as f:
-                if 'data' in f:
-                    gas_data = np.array(f['data'])
+        # Store variable ranges for all detected control variables
+        variable_ranges = {}
+        
+        # Generic function to detect ranges for any control variable
+        def detect_variable_ranges(var_name, var_config, well_type, well_names_list):
+            """Detect ranges for a control variable from H5 files"""
+            h5_file = os.path.join(data_dir, f'batch_timeseries_data_{var_name}.h5')
+            if not os.path.exists(h5_file):
+                return None
+            
+            try:
+                with h5py.File(h5_file, 'r') as f:
+                    if 'data' not in f:
+                        return None
                     
-                    # Focus on injector wells (first 3 wells - indices 0,1,2) and only active injection
-                    if gas_data.shape[2] >= 3:
-                        injector_gas = gas_data[:, :, 0:3]  # First 3 wells are injectors
-                        active_gas = injector_gas[injector_gas > 1000]  # Only consider active injection (>1000 BTU/Day)
-                        
-                        if len(active_gas) > 0:
-                            gas_min = np.min(active_gas)
-                            gas_max = np.max(active_gas)
+                    data = np.array(f['data'])
+                    unit_display = var_config.get('unit_display', '')
+                    display_name = var_config.get('display_name', var_name)
+                    
+                    # Determine which wells to use based on well_type
+                    if well_type == 'producers':
+                        num_target_wells = num_producers
+                        target_indices = None
+                        # Try to determine producer indices
+                        if data.shape[2] >= num_producers + num_injectors:
+                            target_indices = list(range(num_injectors, num_injectors + num_producers))
+                        elif data.shape[2] >= num_producers:
+                            target_indices = list(range(num_producers))
                         else:
-                            # Fallback to all data if no active injection found
-                            gas_min = np.min(gas_data)
-                            gas_max = np.max(gas_data)
+                            target_indices = list(range(data.shape[2]))
+                    elif well_type == 'injectors':
+                        num_target_wells = num_injectors
+                        target_indices = None
+                        # Try to determine injector indices
+                        if data.shape[2] >= num_injectors:
+                            target_indices = list(range(num_injectors))
+                        else:
+                            target_indices = list(range(data.shape[2]))
                     else:
-                        # Fallback to all data if shape unexpected
-                        gas_min = np.min(gas_data)
-                        gas_max = np.max(gas_data)
+                        # Unknown well type, use all data
+                        target_indices = list(range(data.shape[2]))
+                        num_target_wells = data.shape[2]
                     
-                    detected_ranges['gas_inj_min'] = float(gas_min)
-                    detected_ranges['gas_inj_max'] = float(gas_max)
-                    detected_ranges['detection_details']['gas'] = {
-                        'shape': gas_data.shape,
-                        'injector_shape': injector_gas.shape if 'injector_gas' in locals() else gas_data.shape,
-                        'active_values': len(active_gas) if 'active_gas' in locals() else 'all',
-                        'min': float(gas_min),
-                        'max': float(gas_max),
-                        'source': 'batch_timeseries_data_ENERGYRATE.h5 (wells 0-2, active >1000)'
+                    if target_indices:
+                        target_data = data[:, :, target_indices]
+                        # Get non-zero values for range detection
+                        non_zero_data = target_data[target_data > 0]
+                        
+                        if len(non_zero_data) > 0:
+                            var_min = float(np.min(non_zero_data))
+                            var_max = float(np.max(non_zero_data))
+                        else:
+                            # Fallback to all data including zeros
+                            var_min = float(np.min(target_data))
+                            var_max = float(np.max(target_data))
+                        
+                        # Store per-well ranges if possible
+                        well_ranges = {}
+                        if len(target_indices) == len(well_names_list):
+                            for i, well_name in enumerate(well_names_list):
+                                well_data = target_data[:, :, i]
+                                well_non_zero = well_data[well_data > 0]
+                                if len(well_non_zero) > 0:
+                                    well_ranges[well_name] = {
+                                        'min': float(np.min(well_non_zero)),
+                                        'max': float(np.max(well_non_zero))
+                                    }
+                                else:
+                                    well_ranges[well_name] = {
+                                        'min': float(np.min(well_data)),
+                                        'max': float(np.max(well_data))
+                                    }
+                        
+                        return {
+                            'var_name': var_name,
+                            'display_name': display_name,
+                            'well_type': well_type,
+                            'well_names': well_names_list,
+                            'unit_display': unit_display,
+                            'min': var_min,
+                            'max': var_max,
+                            'well_ranges': well_ranges,
+                            'shape': data.shape,
+                            'target_shape': target_data.shape,
+                            'target_indices': target_indices,
+                            'source': f'batch_timeseries_data_{var_name}.h5'
+                        }
+            except Exception as e:
+                print(f"   ⚠️ Error detecting ranges for {var_name}: {e}")
+                return None
+            
+            return None
+        
+        # Detect ranges for all control variables from ROM config
+        for var_name in control_order:
+            if var_name in control_vars:
+                var_config = control_vars[var_name]
+                well_type = var_config.get('well_type', '')
+                well_names_list = var_config.get('well_names', [])
+                
+                detected_range = detect_variable_ranges(var_name, var_config, well_type, well_names_list)
+                if detected_range:
+                    variable_ranges[var_name] = detected_range
+                    print(f"✅ {var_name.upper()} RANGES DETECTED:")
+                    print(f"   📊 Data shape: {detected_range['shape']}")
+                    print(f"   📊 Target data shape: {detected_range['target_shape']}")
+                    print(f"   📈 Range: [{detected_range['min']:.2f}, {detected_range['max']:.2f}] {detected_range['unit_display']}")
+                    if detected_range['well_names']:
+                        well_names_str = ', '.join(detected_range['well_names'])
+                        print(f"   🎯 Wells: {well_names_str}")
+        
+        # Store variable ranges in detection details
+        detected_ranges['detection_details']['variable_ranges'] = variable_ranges
+        
+        # Legacy support: Also store in old format for backward compatibility
+        # Check for water rate file (WATRATRC) for injectors
+        # This is the correct control for injectors according to user
+        water_file = os.path.join(data_dir, 'batch_timeseries_data_WATRATRC.h5')
+        if os.path.exists(water_file):
+            with h5py.File(water_file, 'r') as f:
+                if 'data' in f:
+                    water_data = np.array(f['data'])
+                    
+                    # Determine injector indices from ROM config
+                    injector_indices = None
+                    if water_data.shape[2] >= num_injectors:
+                        # Assume first N wells are injectors (where N = num_injectors from config)
+                        injector_indices = list(range(num_injectors))
+                    else:
+                        injector_indices = list(range(min(num_injectors, water_data.shape[2])))
+                    
+                    if injector_indices:
+                        injector_water = water_data[:, :, injector_indices]
+                        # Check for active injection values
+                        active_water = injector_water[injector_water > 0]  # Any positive water injection
+                        
+                        if len(active_water) > 0:
+                            water_min = np.min(active_water)
+                            water_max = np.max(active_water)
+                            active_count = len(active_water)
+                        else:
+                            # Fallback to all injector data
+                            water_min = float(np.min(injector_water))
+                            water_max = float(np.max(injector_water))
+                            active_count = 0
+                            
+                            # If all zeros, check all wells
+                            all_non_zero = water_data[water_data > 0]
+                            if len(all_non_zero) > 0:
+                                water_min = float(np.min(all_non_zero))
+                                water_max = float(np.max(all_non_zero))
+                                print(f"   ⚠️ Injector wells show zero values - using global data range from all wells")
+                            else:
+                                # Use default range
+                                water_min = 0.0
+                                water_max = 1000.0
+                                print(f"   ⚠️ No valid injection data found - using default range")
+                    else:
+                        # Fallback to all data
+                        all_non_zero = water_data[water_data > 0]
+                        if len(all_non_zero) > 0:
+                            water_min = float(np.min(all_non_zero))
+                            water_max = float(np.max(all_non_zero))
+                            active_count = len(all_non_zero)
+                        else:
+                            water_min = float(np.min(water_data))
+                            water_max = float(np.max(water_data))
+                            active_count = 0
+                    
+                    detected_ranges['water_inj_min'] = float(water_min)
+                    detected_ranges['water_inj_max'] = float(water_max)
+                    detected_ranges['detection_details']['water'] = {
+                        'shape': water_data.shape,
+                        'injector_indices': injector_indices if injector_indices else 'all',
+                        'num_injectors': num_injectors,
+                        'injector_shape': injector_water.shape if 'injector_water' in locals() else water_data.shape,
+                        'active_values': active_count if 'active_count' in locals() else 0,
+                        'min': float(water_min),
+                        'max': float(water_max),
+                        'source': f'batch_timeseries_data_WATRATRC.h5 (wells {injector_indices if injector_indices else "all"})'
                     }
                     
-                    print(f"✅ GAS INJECTION RANGES DETECTED:")
-                    print(f"   📊 Data shape: {gas_data.shape}")
-                    if 'injector_gas' in locals():
-                        print(f"   📊 Injector data shape: {injector_gas.shape}")
-                        if 'active_gas' in locals():
-                            print(f"   🔥 Active injection values (>1000): {len(active_gas)}")
-                    print(f"   📈 Range: [{gas_min:.0f}, {gas_max:.0f}] bbl/day")
-                    print(f"   🎯 Will be used as Action 0-2 defaults")
+                    print(f"✅ WATER INJECTION RANGES DETECTED:")
+                    print(f"   📊 Data shape: {water_data.shape}")
+                    if 'injector_water' in locals():
+                        print(f"   📊 Injector data shape: {injector_water.shape}")
+                        active_count_val = active_count if 'active_count' in locals() else 0
+                        print(f"   💧 Active injection values (>0): {active_count_val}")
+                        if active_count_val == 0:
+                            non_zero_count = np.count_nonzero(injector_water)
+                            if non_zero_count > 0:
+                                print(f"   💡 Found {non_zero_count} non-zero values (using all injector data)")
+                            else:
+                                print(f"   ⚠️ All injector values are zero - may need to check data file")
+                    # Get unit from WATRATRC config if available
+                    water_unit = 'bbl/day'
+                    if 'WATRATRC' in control_vars:
+                        water_unit = control_vars['WATRATRC'].get('unit_display', 'bbl/day')
+                    elif 'WATRATRC' in obs_vars:
+                        water_unit = obs_vars['WATRATRC'].get('unit_display', 'bbl/day')
+                    print(f"   📈 Range: [{water_min:.2f}, {water_max:.2f}] {water_unit}")
+                    if injector_indices:
+                        injector_names_str = ', '.join(well_names_map.get('injectors', [f'I{i+1}' for i in range(len(injector_indices))]))
+                        print(f"   🎯 Will be used for injector wells: {injector_indices} ({injector_names_str})")
+                    else:
+                        print(f"   🎯 Will be used as Water Injection defaults")
+        
+        # Note: ENERGYRATE is an OBSERVATION for producers, NOT a control for injectors
+        # The injector control is WATRATRC (water rate), which was detected above
                     
-        # Check for BHP file (bottom hole pressures)
+        # Check for BHP file (bottom hole pressure)
+        # Use ROM config to determine which wells are producers
         bhp_file = os.path.join(data_dir, 'batch_timeseries_data_BHP.h5')
         if os.path.exists(bhp_file):
             with h5py.File(bhp_file, 'r') as f:
                 if 'data' in f:
                     bhp_data = np.array(f['data'])
                     
-                    # Analyze producer BHP (last 3 wells - indices 3,4,5)
-                    if bhp_data.shape[2] >= 6:  # Ensure we have at least 6 wells
-                        producer_bhp = bhp_data[:, :, 3:6]  # Last 3 wells are producers
+                    # Determine producer indices from ROM config
+                    producer_indices = None
+                    if 'BHP' in control_definitions:
+                        # BHP is a control variable - check if it's for producers or injectors
+                        var_config = control_definitions['BHP']
+                        if var_config['well_type'] == 'producers':
+                            # Producers use BHP as control
+                            # Producers come after injectors in the control order
+                            # Need to determine starting index
+                            total_controls_before = 0
+                            if control_order:
+                                for var_name in control_order:
+                                    if var_name == 'BHP':
+                                        break
+                                    if var_name in control_definitions:
+                                        total_controls_before += control_definitions[var_name]['num_wells']
+                            producer_indices = list(range(total_controls_before, total_controls_before + num_producers))
+                        elif var_config['well_type'] == 'injectors':
+                            # Injectors use BHP as control - producers might be in observations
+                            # For now, assume producers come after injectors
+                            producer_indices = list(range(num_injectors, num_injectors + num_producers))
+                    
+                    # Fallback logic if config doesn't specify
+                    if producer_indices is None:
+                        if bhp_data.shape[2] >= num_producers + num_injectors:
+                            # Assume producers come after injectors
+                            producer_indices = list(range(num_injectors, num_injectors + num_producers))
+                        elif bhp_data.shape[2] >= num_producers:
+                            # If only producers, use first N
+                            producer_indices = list(range(num_producers))
+                        else:
+                            # Last resort: use all available wells
+                            producer_indices = list(range(bhp_data.shape[2]))
+                    
+                    if producer_indices:
+                        producer_bhp = bhp_data[:, :, producer_indices]
                         bhp_min = np.min(producer_bhp)
                         bhp_max = np.max(producer_bhp)
-                        
-                        detected_ranges['bhp_min'] = float(bhp_min)
-                        detected_ranges['bhp_max'] = float(bhp_max)
-                        detected_ranges['detection_details']['bhp'] = {
-                            'shape': bhp_data.shape,
-                            'producer_shape': producer_bhp.shape,
-                            'min': float(bhp_min),
-                            'max': float(bhp_max),
-                            'source': 'batch_timeseries_data_BHP.h5 (wells 3-5)'
-                        }
-                        
-                        print(f"✅ PRODUCER BHP RANGES DETECTED:")
-                        print(f"   📊 Data shape: {bhp_data.shape}")
+                    else:
+                        # Fallback to all data if shape unexpected
+                        bhp_min = np.min(bhp_data)
+                        bhp_max = np.max(bhp_data)
+                    
+                    detected_ranges['bhp_min'] = float(bhp_min)
+                    detected_ranges['bhp_max'] = float(bhp_max)
+                    detected_ranges['detection_details']['bhp'] = {
+                        'shape': bhp_data.shape,
+                        'producer_indices': producer_indices if producer_indices else 'all',
+                        'producer_shape': producer_bhp.shape if 'producer_bhp' in locals() else bhp_data.shape,
+                        'num_producers': num_producers,
+                        'min': float(bhp_min),
+                        'max': float(bhp_max),
+                        'source': f'batch_timeseries_data_BHP.h5 (wells {producer_indices if producer_indices else "all"})'
+                    }
+                    
+                    print(f"✅ PRODUCER BHP RANGES DETECTED:")
+                    print(f"   📊 Data shape: {bhp_data.shape}")
+                    if 'producer_bhp' in locals():
                         print(f"   📊 Producer data shape: {producer_bhp.shape}")
-                        print(f"   📈 Range: [{bhp_min:.2f}, {bhp_max:.2f}] psi")
-                        print(f"   🎯 Will be used as Action 3-5 defaults")
+                        print(f"   📊 Producer indices: {producer_indices if producer_indices else 'all'}")
+                    print(f"   📈 Range: [{bhp_min:.2f}, {bhp_max:.2f}] psi")
+                    if producer_indices:
+                        producer_names_str = ', '.join(well_names_map.get('producers', [f'P{i+1}' for i in range(len(producer_indices))]))
+                        print(f"   🎯 Will be used for producer wells: {producer_indices} ({producer_names_str})")
+                    else:
+                        print(f"   🎯 Will be used as Producer BHP defaults")
                         
+        # Store control definitions and well counts in detection details
+        detected_ranges['detection_details']['control_definitions'] = control_definitions
+        detected_ranges['detection_details']['num_producers'] = num_producers
+        detected_ranges['detection_details']['num_injectors'] = num_injectors
+        detected_ranges['detection_details']['well_names'] = well_names_map
+        
+        # Store full control and observation definitions for UI display
+        detected_ranges['detection_details']['control_variables'] = control_vars
+        detected_ranges['detection_details']['control_order'] = control_order
+        detected_ranges['detection_details']['observation_definitions'] = obs_vars
+        detected_ranges['detection_details']['observation_order'] = obs_order
+        
         # Check if detection was successful
         if 'gas' in detected_ranges['detection_details'] and 'bhp' in detected_ranges['detection_details']:
             detected_ranges['detection_successful'] = True
-            print(f"\n🎉 AUTO-DETECTION SUCCESSFUL!")
-            print(f"   ✅ Both Energy Injection and Producer BHP ranges detected")
+            # Determine what was successfully detected
+            water_detected = 'water' in detected_ranges.get('detection_details', {})
+            bhp_detected = 'bhp' in detected_ranges.get('detection_details', {})
+            
+            print(f"\n🎉 AUTO-DETECTION SUMMARY:")
+            if water_detected and bhp_detected:
+                print(f"   ✅ Both Water Injection and Producer BHP ranges detected")
+            elif water_detected:
+                print(f"   ✅ Water Injection ranges detected")
+                print(f"   ⚠️ Producer BHP ranges NOT detected")
+            elif bhp_detected:
+                print(f"   ✅ Producer BHP ranges detected")
+                print(f"   ⚠️ Water Injection ranges NOT detected")
+            else:
+                print(f"   ⚠️ No action ranges detected - using defaults")
+            
             print(f"   📂 Source directory: {data_dir}")
+            if control_definitions:
+                print(f"   ✅ Synchronized with ROM config control definitions")
+                print(f"      Producers: {num_producers} wells ({well_names_map.get('producers', [])})")
+                print(f"      Injectors: {num_injectors} wells ({well_names_map.get('injectors', [])})")
             print(f"   🔄 Dashboard will use these as default action limits")
-        elif 'gas' in detected_ranges['detection_details'] or 'bhp' in detected_ranges['detection_details']:
+        elif 'water' in detected_ranges['detection_details'] or 'bhp' in detected_ranges['detection_details']:
             detected_ranges['detection_successful'] = True  # Partial success
             print(f"\n⚠️ PARTIAL AUTO-DETECTION:")
-            if 'gas' not in detected_ranges['detection_details']:
-                print(f"   ❌ Gas injection ranges not detected - using fallback")
+            if 'water' not in detected_ranges['detection_details']:
+                print(f"   ❌ Water injection ranges not detected - using fallback")
             if 'bhp' not in detected_ranges['detection_details']:
                 print(f"   ❌ Producer BHP ranges not detected - using fallback")
+            print(f"   📂 Source directory: {data_dir}")
+            if control_definitions:
+                print(f"   ✅ Synchronized with ROM config control definitions")
+                print(f"      Producers: {num_producers} wells ({well_names_map.get('producers', [])})")
+                print(f"      Injectors: {num_injectors} wells ({well_names_map.get('injectors', [])})")
         else:
             print(f"\n❌ AUTO-DETECTION FAILED:")
             print(f"   💡 Using fallback default values")
@@ -1046,12 +1446,12 @@ class RLConfigurationDashboard:
                     paths = self.config_obj.paths
                     # Handle both dict-style and attribute-style access
                     if isinstance(paths, dict):
-                        self.rom_folder = paths.get('rom_models_dir', '../ROM_Refactored/saved_models/')
-                        self.state_folder = paths.get('state_data_dir', '../ROM_Refactored/sr3_batch_output/')
+                        self.rom_folder = os.path.normpath(paths.get('rom_models_dir', '../ROM_Refactored/saved_models/'))
+                        self.state_folder = os.path.normpath(paths.get('state_data_dir', '../ROM_Refactored/sr3_batch_output/'))
                     else:
                         # Attribute-style access
-                        self.rom_folder = getattr(paths, 'rom_models_dir', '../ROM_Refactored/saved_models/')
-                        self.state_folder = getattr(paths, 'state_data_dir', '../ROM_Refactored/sr3_batch_output/')
+                        self.rom_folder = os.path.normpath(getattr(paths, 'rom_models_dir', '../ROM_Refactored/saved_models/'))
+                        self.state_folder = os.path.normpath(getattr(paths, 'state_data_dir', '../ROM_Refactored/sr3_batch_output/'))
                 else:
                     # No paths section in config, use ROM_Refactored defaults
                     self.rom_folder = "../ROM_Refactored/saved_models/"
@@ -1089,19 +1489,69 @@ class RLConfigurationDashboard:
         self.models_ready = False
         self.device = None
         
-        # Available state types (MUST be defined before ROM compatibility)
-        self.known_states = ['SW', 'SG', 'PRES', 'PERMI', 'PERMJ', 'PERMK', 'POROS']
+        # Control/Observation selection storage
+        self.control_selections = {}  # Dict mapping variable names to checkbox widgets
+        self.observation_selections = {}  # Dict mapping variable names to checkbox widgets
+        self.variable_definitions = {}  # Dict storing all variable metadata from ROM config
+        self.variable_range_widgets = {}  # Dict storing range input widgets for each control variable
         
-        # AUTO-DETECT action ranges from H5 files (MUST be defined before ROM compatibility)
+        # Available state types (MUST be defined before ROM compatibility)
+        # Load training channel order and scaling from normalization parameters
+        self.training_channel_order = None
+        self.training_channel_scaling = {}  # Maps channel name to scaling type (log/minmax)
+        
+        # Try to load from normalization parameters
+        preprocessing_params = self._load_preprocessing_normalization_parameters()
+        if preprocessing_params:
+            # Get training channel order from selection_summary
+            selection_summary = preprocessing_params.get('selection_summary', {})
+            training_channels = selection_summary.get('training_channels', [])
+            if training_channels:
+                self.training_channel_order = training_channels
+                # Use training channels as the source of truth for known states
+                self.known_states = training_channels.copy()
+                print(f"   ✅ Loaded training channel order from normalization params: {training_channels}")
+            
+            # Get scaling approach from spatial_channels
+            spatial_channels = preprocessing_params.get('spatial_channels', {})
+            for channel_name, channel_config in spatial_channels.items():
+                norm_type = channel_config.get('normalization_type', 'minmax')
+                # Normalize to 'log' or 'minmax'
+                if norm_type.lower() in ['log', 'logarithmic']:
+                    self.training_channel_scaling[channel_name] = 'log'
+                else:
+                    self.training_channel_scaling[channel_name] = 'minmax'
+            
+            if self.training_channel_scaling:
+                print(f"   ✅ Loaded scaling approach from normalization params:")
+                for channel, scaling in self.training_channel_scaling.items():
+                    print(f"      {channel}: {scaling}")
+        
+        # If no normalization params found, known_states will be populated from file scanning
+        # This ensures we only work with states that actually exist
+        
+        # AUTO-DETECT action ranges from H5 files and sync with ROM config
         print("🔧 INITIALIZING DASHBOARD WITH AUTO-DETECTED ACTION RANGES...")
-        detected_ranges = auto_detect_action_ranges_from_h5(data_dir=self.state_folder)
+        # Try to find ROM config path
+        rom_config_path = None
+        try:
+            import os
+            from pathlib import Path
+            current_dir = Path(__file__).parent.parent.parent
+            rom_config_path = current_dir / 'ROM_Refactored' / 'config.yaml'
+            if not os.path.exists(rom_config_path):
+                rom_config_path = None
+        except Exception:
+            rom_config_path = None
+        
+        detected_ranges = auto_detect_action_ranges_from_h5(data_dir=self.state_folder, rom_config_path=rom_config_path)
         
         # Default action ranges (AUTO-DETECTED from H5 files)
         self.default_actions = {
-            'bhp_min': detected_ranges['bhp_min'],         # psi - Auto-detected from H5 files
-            'bhp_max': detected_ranges['bhp_max'],         # psi - Auto-detected from H5 files
-            'gas_inj_min': detected_ranges['gas_inj_min'], # BTU/Day - Auto-detected from H5 files
-            'gas_inj_max': detected_ranges['gas_inj_max']  # BTU/Day - Auto-detected from H5 files
+            'bhp_min': detected_ranges.get('bhp_min', 1087.78),         # psi - Auto-detected from H5 files
+            'bhp_max': detected_ranges.get('bhp_max', 1305.34),         # psi - Auto-detected from H5 files
+            'water_inj_min': detected_ranges.get('water_inj_min', 0.0), # bbl/day - Auto-detected from H5 files
+            'water_inj_max': detected_ranges.get('water_inj_max', 1000.0)  # bbl/day - Auto-detected from H5 files
         }
         
         # Store detection details for display
@@ -1110,11 +1560,11 @@ class RLConfigurationDashboard:
         
         if self.detection_successful:
             print(f"✅ DASHBOARD INITIALIZED WITH AUTO-DETECTED RANGES:")
-            print(f"   💨 Energy Injection: [{self.default_actions['gas_inj_min']:.0f}, {self.default_actions['gas_inj_max']:.0f}] BTU/Day")
+            print(f"   💧 Water Injection: [{self.default_actions['water_inj_min']:.2f}, {self.default_actions['water_inj_max']:.2f}] bbl/day")
             print(f"   🔽 Producer BHP: [{self.default_actions['bhp_min']:.2f}, {self.default_actions['bhp_max']:.2f}] psi")
         else:
             print(f"⚠️ DASHBOARD INITIALIZED WITH FALLBACK RANGES:")
-            print(f"   💨 Energy Injection: [{self.default_actions['gas_inj_min']:.0f}, {self.default_actions['gas_inj_max']:.0f}] BTU/Day")
+            print(f"   💧 Water Injection: [{self.default_actions['water_inj_min']:.2f}, {self.default_actions['water_inj_max']:.2f}] bbl/day")
             print(f"   🔽 Producer BHP: [{self.default_actions['bhp_min']:.2f}, {self.default_actions['bhp_max']:.2f}] psi")
         
         # ROM compatibility handled through training-only normalization parameters
@@ -1201,16 +1651,29 @@ class RLConfigurationDashboard:
         from datetime import datetime
         
         try:
-            # Find the most recent normalization parameter file (same logic as RL_SAC_Interactive_Training.py)
-            norm_files = [f for f in os.listdir('.') if f.startswith('normalization_parameters_') and f.endswith('.json')]
+            # Search for normalization parameter files in multiple locations
+            search_dirs = [
+                '.',  # Current directory
+                '../ROM_Refactored/processed_data/',  # ROM processed data directory
+                './processed_data/',  # Local processed data directory
+            ]
+            
+            norm_files = []
+            for search_dir in search_dirs:
+                if os.path.exists(search_dir):
+                    dir_files = [os.path.join(search_dir, f) for f in os.listdir(search_dir) 
+                                if f.startswith('normalization_parameters_') and f.endswith('.json')]
+                    norm_files.extend(dir_files)
             
             if not norm_files:
                 print(f"      ❌ No normalization parameter JSON files found")
                 print(f"      💡 Expected files like: normalization_parameters_YYYYMMDD_HHMMSS.json")
+                print(f"      🔍 Searched in: {', '.join(search_dirs)}")
                 return None
             
-            # Get the most recent file
-            latest_norm_file = sorted(norm_files)[-1]
+            # Get the most recent file (by modification time)
+            norm_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+            latest_norm_file = norm_files[0]
             print(f"      📂 Loading from: {latest_norm_file}")
             
             # Load the JSON file
@@ -1422,16 +1885,28 @@ class RLConfigurationDashboard:
             # Scan available states
             self._scan_available_states()
             
-            # Re-detect action ranges with updated folder path
+            # Re-detect action ranges with updated folder path and sync with ROM config
             print("\n🔄 RE-DETECTING ACTION RANGES WITH UPDATED FOLDER PATH...")
-            detected_ranges = auto_detect_action_ranges_from_h5(data_dir=self.state_folder)
+            # Try to find ROM config path
+            rom_config_path = None
+            try:
+                import os
+                from pathlib import Path
+                current_dir = Path(__file__).parent.parent.parent
+                rom_config_path = current_dir / 'ROM_Refactored' / 'config.yaml'
+                if not os.path.exists(rom_config_path):
+                    rom_config_path = None
+            except Exception:
+                rom_config_path = None
+            
+            detected_ranges = auto_detect_action_ranges_from_h5(data_dir=self.state_folder, rom_config_path=rom_config_path)
             
             # Update default actions
             self.default_actions = {
                 'bhp_min': detected_ranges['bhp_min'],
                 'bhp_max': detected_ranges['bhp_max'],
-                'gas_inj_min': detected_ranges['gas_inj_min'],
-                'gas_inj_max': detected_ranges['gas_inj_max']
+                'water_inj_min': detected_ranges.get('water_inj_min', 0.0),
+                'water_inj_max': detected_ranges.get('water_inj_max', 1000.0)
             }
             
             # Update detection details
@@ -1448,7 +1923,7 @@ class RLConfigurationDashboard:
             print("✅ Folder scanning completed!")
     
     def _scan_rom_models(self):
-        """Scan for available ROM models"""
+        """Scan for available ROM models (searches recursively in subdirectories)"""
         rom_models = []
         
         if not os.path.exists(self.rom_folder):
@@ -1459,23 +1934,42 @@ class RLConfigurationDashboard:
         rom_folder = os.path.normpath(self.rom_folder)
         
         # Look for encoder files to identify ROM models
+        # Support recursive search in subdirectories (e.g., grid_search/)
         # Support both grid search pattern (e2co_encoder_grid_*) and standard pattern (e2co_encoder_*)
         encoder_patterns = [
-            os.path.join(rom_folder, "e2co_encoder_grid_*.h5"),  # Grid search pattern
-            os.path.join(rom_folder, "e2co_encoder_*.h5"),        # Standard pattern
-            os.path.join(rom_folder, "*encoder*.h5")              # Fallback pattern
+            os.path.join(rom_folder, "**", "e2co_encoder_grid_*.h5"),  # Grid search pattern (recursive)
+            os.path.join(rom_folder, "**", "e2co_encoder_*.h5"),         # Standard pattern (recursive)
+            os.path.join(rom_folder, "**", "*encoder*.h5"),              # Fallback pattern (recursive)
+            os.path.join(rom_folder, "e2co_encoder_grid_*.h5"),         # Grid search pattern (root)
+            os.path.join(rom_folder, "e2co_encoder_*.h5"),               # Standard pattern (root)
+            os.path.join(rom_folder, "*encoder*.h5")                    # Fallback pattern (root)
         ]
         
         encoder_files = []
         for pattern in encoder_patterns:
-            encoder_files.extend(glob.glob(pattern))
+            found_files = glob.glob(pattern, recursive=True)
+            encoder_files.extend(found_files)
         
-        # Remove duplicates
-        encoder_files = list(set(encoder_files))
+        # Remove duplicates and normalize paths
+        encoder_files = list(set([os.path.normpath(f) for f in encoder_files]))
         
         if not encoder_files:
             print(f"   ⚠️ No encoder files found in {rom_folder}")
             print(f"   💡 Looking for files matching: e2co_encoder_*.h5 or *encoder*.h5")
+            print(f"   🔍 Searched recursively in: {rom_folder} and subdirectories")
+            # List what files are actually in the directory
+            if os.path.exists(rom_folder):
+                all_files = []
+                for root, dirs, files in os.walk(rom_folder):
+                    for file in files:
+                        if file.endswith('.h5'):
+                            all_files.append(os.path.join(root, file))
+                if all_files:
+                    print(f"   📁 Found {len(all_files)} .h5 files in directory:")
+                    for f in all_files[:10]:  # Show first 10
+                        print(f"      - {os.path.relpath(f, rom_folder)}")
+                    if len(all_files) > 10:
+                        print(f"      ... and {len(all_files) - 10} more")
             self.config['rom_models'] = []
             return
         
@@ -1506,16 +2000,93 @@ class RLConfigurationDashboard:
             decoder_candidate2 = os.path.join(dirname, filename.replace('encoder_grid', 'decoder_grid'))
             transition_candidate2 = os.path.join(dirname, filename.replace('encoder_grid', 'transition_grid'))
             
-            # Check which method works
+            # Method 3: Also try searching in the same directory for any matching decoder/transition files
+            # This handles cases where naming might be slightly different
+            decoder_pattern = os.path.join(dirname, filename.replace('encoder', 'decoder'))
+            transition_pattern = os.path.join(dirname, filename.replace('encoder', 'transition'))
+            
+            # Check which method works (in order of preference)
             if os.path.exists(decoder_candidate1):
                 decoder_file = decoder_candidate1
             elif os.path.exists(decoder_candidate2):
                 decoder_file = decoder_candidate2
+            elif os.path.exists(decoder_pattern):
+                decoder_file = decoder_pattern
+            else:
+                # Last resort: search for any decoder file with similar base name
+                # Extract key identifiers from filename (run number, batch size, latent dim, etc.)
+                base_parts = []
+                if 'run' in filename:
+                    run_match = re.search(r'run(\d+)', filename)
+                    if run_match:
+                        base_parts.append(f"run{run_match.group(1)}")
+                if 'bs' in filename:
+                    bs_match = re.search(r'bs(\d+)', filename)
+                    if bs_match:
+                        base_parts.append(f"bs{bs_match.group(1)}")
+                if 'ld' in filename:
+                    ld_match = re.search(r'ld(\d+)', filename)
+                    if ld_match:
+                        base_parts.append(f"ld{ld_match.group(1)}")
+                
+                if base_parts:
+                    # Search for decoder files with matching identifiers
+                    search_pattern = os.path.join(dirname, f"*decoder*{'_'.join(base_parts)}*.h5")
+                    decoder_search = glob.glob(search_pattern)
+                    if decoder_search:
+                        decoder_file = decoder_search[0]
+                    else:
+                        # Even more flexible: just search for any decoder in same directory
+                        all_decoders = glob.glob(os.path.join(dirname, "*decoder*.h5"))
+                        if all_decoders:
+                            # Try to match by run number or other identifiers
+                            for dec_file in all_decoders:
+                                if any(part in dec_file for part in base_parts):
+                                    decoder_file = dec_file
+                                    break
+                            if not decoder_file and all_decoders:
+                                decoder_file = all_decoders[0]  # Use first decoder as fallback
             
             if os.path.exists(transition_candidate1):
                 transition_file = transition_candidate1
             elif os.path.exists(transition_candidate2):
                 transition_file = transition_candidate2
+            elif os.path.exists(transition_pattern):
+                transition_file = transition_pattern
+            else:
+                # Last resort: search for any transition file with similar base name
+                # Extract key identifiers from filename
+                base_parts = []
+                if 'run' in filename:
+                    run_match = re.search(r'run(\d+)', filename)
+                    if run_match:
+                        base_parts.append(f"run{run_match.group(1)}")
+                if 'bs' in filename:
+                    bs_match = re.search(r'bs(\d+)', filename)
+                    if bs_match:
+                        base_parts.append(f"bs{bs_match.group(1)}")
+                if 'ld' in filename:
+                    ld_match = re.search(r'ld(\d+)', filename)
+                    if ld_match:
+                        base_parts.append(f"ld{ld_match.group(1)}")
+                
+                if base_parts:
+                    # Search for transition files with matching identifiers
+                    search_pattern = os.path.join(dirname, f"*transition*{'_'.join(base_parts)}*.h5")
+                    transition_search = glob.glob(search_pattern)
+                    if transition_search:
+                        transition_file = transition_search[0]
+                    else:
+                        # Even more flexible: just search for any transition in same directory
+                        all_transitions = glob.glob(os.path.join(dirname, "*transition*.h5"))
+                        if all_transitions:
+                            # Try to match by run number or other identifiers
+                            for trans_file in all_transitions:
+                                if any(part in trans_file for part in base_parts):
+                                    transition_file = trans_file
+                                    break
+                            if not transition_file and all_transitions:
+                                transition_file = all_transitions[0]  # Use first transition as fallback
             
             # If we found all three files, add to models
             if decoder_file and transition_file:
@@ -1537,6 +2108,18 @@ class RLConfigurationDashboard:
                         'info': model_info,
                         'filename': filename
                     }
+                    print(f"   ✅ Found complete model set: {display_name}")
+                    print(f"      Encoder: {os.path.basename(encoder_file)}")
+                    print(f"      Decoder: {os.path.basename(decoder_file)}")
+                    print(f"      Transition: {os.path.basename(transition_file)}")
+            else:
+                # Warn if encoder found but decoder/transition missing
+                missing = []
+                if not decoder_file:
+                    missing.append('decoder')
+                if not transition_file:
+                    missing.append('transition')
+                print(f"   ⚠️ Found encoder but missing {', '.join(missing)}: {os.path.basename(encoder_file)}")
         
         # Convert to list
         rom_models = list(model_groups.values())
@@ -1649,22 +2232,89 @@ class RLConfigurationDashboard:
         return info
     
     def _scan_available_states(self):
-        """Scan for available state data files"""
+        """Scan for available state data files (searches for various naming patterns)
+        Uses training channel order from normalization params if available, otherwise scans all files"""
         available_states = []
         
         if not os.path.exists(self.state_folder):
             print(f"❌ State folder not found: {self.state_folder}")
             return
+        
+        # Normalize path
+        state_folder = os.path.normpath(self.state_folder)
+        
+        # Determine which states to look for:
+        # Priority 1: Training channel order from normalization params (if available)
+        # Priority 2: known_states (if set from normalization params)
+        # Priority 3: Scan all .h5 files and extract state names dynamically
+        states_to_check = []
+        
+        if hasattr(self, 'training_channel_order') and self.training_channel_order:
+            # Use training channel order as the source of truth
+            states_to_check = self.training_channel_order.copy()
+            print(f"   🔍 Scanning for training channels: {states_to_check}")
+        elif self.known_states:
+            # Use known_states if set
+            states_to_check = self.known_states.copy()
+            print(f"   🔍 Scanning for known states: {states_to_check}")
+        else:
+            # No predefined list - scan all .h5 files and extract state names
+            print(f"   🔍 No predefined state list - scanning all .h5 files to detect states")
+            all_h5_files = glob.glob(os.path.join(state_folder, 'batch_spatial_properties_*.h5'))
+            for h5_file in all_h5_files:
+                filename = os.path.basename(h5_file)
+                # Extract state name from pattern: batch_spatial_properties_{STATE_NAME}.h5
+                if 'batch_spatial_properties_' in filename:
+                    state_name = filename.replace('batch_spatial_properties_', '').replace('.h5', '')
+                    states_to_check.append(state_name)
             
-        # Look for spatial property files
-        for state_name in self.known_states:
-            state_file = os.path.join(self.state_folder, f'batch_spatial_properties_{state_name}.h5')
+            if states_to_check:
+                print(f"   ✅ Detected states from file names: {states_to_check}")
+                # Update known_states with detected states
+                self.known_states = states_to_check.copy()
+        
+        found_files = {}
+        for state_name in states_to_check:
+            # Try multiple patterns
+            patterns = [
+                os.path.join(state_folder, f'batch_spatial_properties_{state_name}.h5'),
+                os.path.join(state_folder, f'{state_name}.h5'),
+                os.path.join(state_folder, f'*{state_name}*.h5'),
+            ]
+            
+            for pattern in patterns:
+                matching_files = glob.glob(pattern)
+                if matching_files:
+                    found_files[state_name] = matching_files[0]  # Use first match
+                    break
+        
+        # Add found states (only include states that actually have files)
+        for state_name, state_file in found_files.items():
             if os.path.exists(state_file):
                 available_states.append(state_name)
-                print(f"   ✅ Found {state_name} data")
+                print(f"   ✅ Found {state_name} data: {os.path.basename(state_file)}")
+        
+        # Filter available_states to match training channel order if available
+        # This ensures we only show states that were actually used in training
+        if hasattr(self, 'training_channel_order') and self.training_channel_order:
+            # Only include states that are in both training order AND available
+            available_states = [s for s in self.training_channel_order if s in available_states]
+            print(f"   🎯 Filtered to training channels: {available_states}")
         
         self.config['available_states'] = available_states
-        print(f"📊 Found {len(available_states)} state types: {available_states}")
+        if available_states:
+            print(f"📊 Found {len(available_states)} state types: {available_states}")
+        else:
+            print(f"⚠️ No state files found in {state_folder}")
+            print(f"   💡 Looking for files matching: batch_spatial_properties_*.h5")
+            # List what files are actually there
+            all_h5_files = glob.glob(os.path.join(state_folder, '*.h5'))
+            if all_h5_files:
+                print(f"   📁 Found {len(all_h5_files)} .h5 files in directory:")
+                for h5_file in all_h5_files[:10]:
+                    print(f"      - {os.path.basename(h5_file)}")
+                if len(all_h5_files) > 10:
+                    print(f"      ... and {len(all_h5_files) - 10} more")
     
     def _get_min_positive_value(self, state_name):
         """Get minimum positive value for a state"""
@@ -1756,15 +2406,34 @@ class RLConfigurationDashboard:
         # State selection and scaling
         state_widgets.append(widgets.HTML("<hr><h4>📊 State Selection & Scaling</h4>"))
         
+        # Use training channel order if available, otherwise use available_states order
+        if hasattr(self, 'training_channel_order') and self.training_channel_order:
+            # Filter to only include states that are available
+            display_order = [s for s in self.training_channel_order if s in self.config['available_states']]
+            # Add any available states not in training order (for completeness)
+            remaining_states = [s for s in self.config['available_states'] if s not in display_order]
+            display_order.extend(remaining_states)
+            state_widgets.append(widgets.HTML(
+                f"<p><b>✅ Using training model order:</b> {self.training_channel_order}</p>"
+                f"<p><i>States are displayed in the same order as the trained ROM model.</i></p>"
+            ))
+        else:
+            display_order = self.config['available_states']
+            state_widgets.append(widgets.HTML(
+                "<p><i>⚠️ Training channel order not found. Using available states order.</i></p>"
+            ))
+        
         self.state_checkboxes = {}
         self.scaling_radios = {}
         
-        for state_name in self.config['available_states']:
-            # State checkbox - use ROM compatibility if available
-            if hasattr(self, 'rom_normalization') and state_name in self.rom_normalization:
+        for state_name in display_order:
+            # State checkbox - pre-select if in training channel order
+            if hasattr(self, 'training_channel_order') and self.training_channel_order:
+                default_selected = state_name in self.training_channel_order
+            elif hasattr(self, 'rom_normalization') and state_name in self.rom_normalization:
                 default_selected = True  # ROM states are automatically selected
             else:
-                default_selected = state_name in ['SG', 'PRES']  # Fallback to common states (SW unchecked by default)
+                default_selected = False  # Don't auto-select by default
             
             checkbox = widgets.Checkbox(
                 value=default_selected,
@@ -1773,11 +2442,14 @@ class RLConfigurationDashboard:
                 layout=widgets.Layout(width='100px')
             )
             
-            # Scaling options - use ROM scaling if available
-            if hasattr(self, 'rom_state_scaling') and state_name in self.rom_state_scaling:
+            # Scaling options - use training scaling if available, otherwise fallback
+            if hasattr(self, 'training_channel_scaling') and state_name in self.training_channel_scaling:
+                default_scaling = self.training_channel_scaling[state_name]
+            elif hasattr(self, 'rom_state_scaling') and state_name in self.rom_state_scaling:
                 default_scaling = self.rom_state_scaling[state_name]
             else:
-                default_scaling = 'log' if 'PERM' in state_name else 'minmax'  # Fallback
+                # Fallback: use config.yaml defaults or heuristic
+                default_scaling = 'log' if 'PERM' in state_name or state_name in ['PRES', 'TEMP'] else 'minmax'
             
             scaling_radio = widgets.RadioButtons(
                 options=['minmax', 'log'],
@@ -1807,29 +2479,38 @@ class RLConfigurationDashboard:
         self.state_tab.children = state_widgets
     
     def _update_action_tab(self):
-        """Update the action configuration tab"""
+        """Update the action range configuration tab with dynamic controls/observations selection"""
         action_widgets = [
             widgets.HTML("<h3>🎮 Action Range Configuration</h3>"),
-            widgets.HTML("<p><i>Configure BHP and injection rate ranges for each well</i></p>")
+            widgets.HTML("<p><i>Select controls and observations, then configure ranges for each control variable</i></p>")
         ]
         
-        # Add detection status information
+        # Auto-detected ranges summary
+        detection_details = getattr(self, 'detection_details', {})
         if hasattr(self, 'detection_successful') and self.detection_successful:
-            detection_html = "<div style='background-color: #e8f5e8; padding: 10px; border-left: 4px solid #4CAF50; margin: 10px 0;'>"
+            detection_html = "<div style='background-color: #d4edda; padding: 10px; border-left: 4px solid #28a745; margin: 10px 0;'>"
             detection_html += "<h4>✅ Auto-Detected Ranges from H5 Files</h4>"
             detection_html += "<p><b>Ranges below are automatically detected from your data files:</b></p>"
             
-            if 'gas' in self.detection_details:
-                gas_details = self.detection_details['gas']
-                detection_html += f"<p>💨 <b>Energy Injection:</b> [{gas_details['min']:.0f}, {gas_details['max']:.0f}] BTU/Day<br/>"
-                detection_html += f"&nbsp;&nbsp;&nbsp;&nbsp;📂 Source: {gas_details['source']} (shape: {gas_details['shape']})</p>"
+            # Show detected variable ranges
+            variable_ranges = detection_details.get('variable_ranges', {})
+            for var_name, var_range_info in variable_ranges.items():
+                detection_html += f"<p>📊 <b>{var_range_info['display_name']} ({var_name}):</b> "
+                detection_html += f"[{var_range_info['min']:.2f}, {var_range_info['max']:.2f}] {var_range_info['unit_display']}<br/>"
+                detection_html += f"&nbsp;&nbsp;&nbsp;&nbsp;📂 Source: {var_range_info['source']} (shape: {var_range_info['shape']})<br/>"
+                detection_html += f"&nbsp;&nbsp;&nbsp;&nbsp;🔧 {var_range_info['well_type'].title()}: {var_range_info['well_names']}"
+                detection_html += "</p>"
             
-            if 'bhp' in self.detection_details:
-                bhp_details = self.detection_details['bhp']
-                detection_html += f"<p>🔽 <b>Producer BHP:</b> [{bhp_details['min']:.2f}, {bhp_details['max']:.2f}] psi<br/>"
-                detection_html += f"&nbsp;&nbsp;&nbsp;&nbsp;📂 Source: {bhp_details['source']} (shape: {bhp_details['producer_shape']})</p>"
+            # Show ROM config synchronization status
+            if 'well_names' in detection_details:
+                well_names = detection_details['well_names']
+                detection_html += "<p><b>✅ Synchronized with ROM config control definitions</b></p>"
+                if well_names.get('producers'):
+                    detection_html += f"<p>&nbsp;&nbsp;&nbsp;&nbsp;📊 Producers: {well_names['producers']}</p>"
+                if well_names.get('injectors'):
+                    detection_html += f"<p>&nbsp;&nbsp;&nbsp;&nbsp;📊 Injectors: {well_names['injectors']}</p>"
             
-            detection_html += "<p><i>💡 These ranges reflect the actual data in your reservoir model and are optimal for RL training.</i></p>"
+            detection_html += "<p><i>💡 These ranges reflect the actual data in your reservoir model and are synchronized with ROM config.</i></p>"
             detection_html += "</div>"
             
             action_widgets.append(widgets.HTML(detection_html))
@@ -1837,7 +2518,7 @@ class RLConfigurationDashboard:
             fallback_html = "<div style='background-color: #fff3cd; padding: 10px; border-left: 4px solid #ffc107; margin: 10px 0;'>"
             fallback_html += "<h4>⚠️ Using Fallback Default Ranges</h4>"
             fallback_html += "<p><b>Auto-detection failed. Using predefined ranges:</b></p>"
-            fallback_html += f"<p>💨 Energy Injection: [{self.default_actions['gas_inj_min']:.0f}, {self.default_actions['gas_inj_max']:.0f}] BTU/Day</p>"
+            fallback_html += f"<p>💧 Water Injection: [{self.default_actions['water_inj_min']:.2f}, {self.default_actions['water_inj_max']:.2f}] bbl/day</p>"
             fallback_html += f"<p>🔽 Producer BHP: [{self.default_actions['bhp_min']:.2f}, {self.default_actions['bhp_max']:.2f}] psi</p>"
             fallback_html += "<p><i>💡 Check that H5 files exist in sr3_batch_output/ directory.</i></p>"
             fallback_html += "</div>"
@@ -1854,9 +2535,13 @@ class RLConfigurationDashboard:
         refresh_button.on_click(self._refresh_action_ranges)
         action_widgets.append(refresh_button)
         
-        # Well configuration
+        # Well configuration (synchronized with ROM config)
+        num_producers = detection_details.get('num_producers', 3)
+        num_injectors = detection_details.get('num_injectors', 3)
+        total_wells = num_producers + num_injectors
+        
         self.num_wells_input = widgets.IntSlider(
-            value=6,
+            value=total_wells,
             min=2,
             max=20,
             description='Total Wells:',
@@ -1865,7 +2550,7 @@ class RLConfigurationDashboard:
         )
         
         self.num_prod_input = widgets.IntSlider(
-            value=3,
+            value=num_producers,
             min=1,
             max=10,
             description='Producers:',
@@ -1879,51 +2564,435 @@ class RLConfigurationDashboard:
             self.num_prod_input
         ])
         
-        # BHP ranges for producers
-        action_widgets.append(widgets.HTML("<h4>📊 BHP Ranges (psi) - Producers</h4>"))
+        # ALWAYS load control and observation definitions directly from ROM config file
+        # This ensures we get the latest values, not stale cached values from detection_details
+        control_vars = {}
+        control_order = []
+        obs_vars = {}
+        obs_order = []
+        variable_ranges = detection_details.get('variable_ranges', {})  # Keep ranges from detection
         
-        self.bhp_ranges = {}
-        for i in range(3):  # Default 3 producers
-            min_input = widgets.FloatText(
-                value=self.default_actions['bhp_min'],
-                description=f'P{i+1} Min:',
-                style={'description_width': '80px'},
-                layout=widgets.Layout(width='150px')
-            )
-            max_input = widgets.FloatText(
-                value=self.default_actions['bhp_max'],
-                description=f'Max:',
-                style={'description_width': '40px'},
-                layout=widgets.Layout(width='120px')
-            )
+        # Load directly from ROM config file (source of truth)
+        try:
+            import yaml
+            import copy
+            from pathlib import Path
+            current_dir = Path(__file__).parent.parent.parent
+            rom_config_path = current_dir / 'ROM_Refactored' / 'config.yaml'
             
-            row = widgets.HBox([min_input, max_input])
-            action_widgets.append(row)
-            
-            self.bhp_ranges[f'P{i+1}'] = {'min': min_input, 'max': max_input}
+            if rom_config_path.exists():
+                with open(rom_config_path, 'r') as f:
+                    rom_config = yaml.safe_load(f)
+                
+                # Load controls - ALWAYS from ROM config file
+                controls_config = rom_config.get('data', {}).get('controls', {})
+                if controls_config and 'variables' in controls_config:
+                    control_vars = copy.deepcopy(controls_config['variables'])
+                    control_order = controls_config.get('order', [])
+                    print(f"   ✅ Loaded {len(control_vars)} control variables from ROM config file")
+                    for var_name in control_order:
+                        if var_name in control_vars:
+                            var_cfg = control_vars[var_name]
+                            print(f"      {var_name}: well_names={var_cfg.get('well_names', [])}, indices={var_cfg.get('indices', [])}, well_type={var_cfg.get('well_type', 'unknown')}")
+                
+                # Load observations - ALWAYS from ROM config file
+                observations_config = rom_config.get('data', {}).get('observations', {})
+                if observations_config and 'variables' in observations_config:
+                    obs_vars = copy.deepcopy(observations_config['variables'])
+                    obs_order = observations_config.get('order', [])
+                    print(f"   ✅ Loaded {len(obs_vars)} observation variables from ROM config file")
+            else:
+                print(f"   ⚠️ ROM config file not found at {rom_config_path}")
+                # Fallback to detection_details if ROM config not found
+                control_vars = detection_details.get('control_variables', {})
+                control_order = detection_details.get('control_order', [])
+                obs_vars = detection_details.get('observation_definitions', {})
+                obs_order = detection_details.get('observation_order', [])
+        except Exception as e:
+            print(f"⚠️ Could not load ROM config for controls/observations: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to detection_details if loading fails
+            control_vars = detection_details.get('control_variables', {})
+            control_order = detection_details.get('control_order', [])
+            obs_vars = detection_details.get('observation_definitions', {})
+            obs_order = detection_details.get('observation_order', [])
         
-        # Gas injection ranges for injectors
-        action_widgets.append(widgets.HTML("<h4>⛽ Energy Injection Ranges (BTU/Day) - Injectors</h4>"))
         
-        self.gas_ranges = {}
-        for i in range(3):  # Default 3 injectors
-            min_input = widgets.FloatText(
-                value=self.default_actions['gas_inj_min'],
-                description=f'I{i+1} Min:',
-                style={'description_width': '80px'},
-                layout=widgets.Layout(width='180px')
-            )
-            max_input = widgets.FloatText(
-                value=self.default_actions['gas_inj_max'],
-                description=f'Max:',
-                style={'description_width': '40px'},
-                layout=widgets.Layout(width='180px')
-            )
+        # Combine all variables from both controls and observations for display
+        # This allows user to select any variable as control or observation
+        # IMPORTANT: For variables that exist in both, we need to preserve both versions
+        # because controls and observations can have different indices/well_names
+        all_vars = {}
+        # First add observations (they have more complete info like group_name)
+        all_vars.update(obs_vars)
+        # Then add/update with controls (to get control-specific indices and well_names)
+        # But preserve observation fields that don't exist in controls
+        for var_name, var_config in control_vars.items():
+            if var_name in all_vars:
+                # Merge: use control config but preserve observation-specific fields
+                merged_config = all_vars[var_name].copy()
+                merged_config.update(var_config)
+                # For controls display, prioritize control indices and well_names
+                merged_config['control_indices'] = var_config.get('indices', [])
+                merged_config['control_well_names'] = var_config.get('well_names', [])
+                # Keep observation indices/well_names for observation display
+                merged_config['observation_indices'] = all_vars[var_name].get('indices', [])
+                merged_config['observation_well_names'] = all_vars[var_name].get('well_names', [])
+                all_vars[var_name] = merged_config
+            else:
+                all_vars[var_name] = var_config.copy()
+        
+        # Create combined order (controls first, then observations not in controls)
+        combined_order = list(control_order)
+        for var_name in obs_order:
+            if var_name not in combined_order:
+                combined_order.append(var_name)
+        
+        # Initialize selections if not already done
+        if not hasattr(self, 'control_selections') or not self.control_selections:
+            self.control_selections = {}
+            self.observation_selections = {}
+            self.variable_range_widgets = {}
+        
+        # Controls Selection Section
+        action_widgets.append(widgets.HTML("<hr style='margin: 20px 0;'>"))
+        action_widgets.append(widgets.HTML("<h4>🎮 Select Control Variables</h4>"))
+        action_widgets.append(widgets.HTML("<p><i>Select which variables will be used as controls (actions) for the RL agent. Variables are shown from ROM config:</i></p>"))
+        
+        # Show all variables (from both controls and observations) so user can select what they want
+        # But default selection based on ROM config controls
+        if not all_vars:
+            action_widgets.append(widgets.HTML("<p style='color: #ff9800;'><i>⚠️ No variables found in ROM config. Please ensure ROM_Refactored/config.yaml has controls/observations defined.</i></p>"))
+        else:
+            # Show variables grouped by well type for clarity
+            # First show variables for producers, then injectors
+            producer_vars = []
+            injector_vars = []
+            other_vars = []
             
-            row = widgets.HBox([min_input, max_input])
-            action_widgets.append(row)
+            for var_name in combined_order:
+                if var_name not in all_vars:
+                    continue
+                var_config = all_vars[var_name]
+                well_type = var_config.get('well_type', 'unknown')
+                if well_type == 'producers':
+                    producer_vars.append(var_name)
+                elif well_type == 'injectors':
+                    injector_vars.append(var_name)
+                else:
+                    other_vars.append(var_name)
             
-            self.gas_ranges[f'I{i+1}'] = {'min': min_input, 'max': max_input}
+            # Show producer variables first
+            if producer_vars:
+                action_widgets.append(widgets.HTML("<p style='font-weight: bold; margin-top: 10px; color: #1976d2;'>📊 Producer Variables:</p>"))
+                for var_name in producer_vars:
+                    if var_name not in all_vars:
+                        continue
+                    
+                    var_config = all_vars[var_name]
+                    display_name = var_config.get('display_name', var_name)
+                    well_type = var_config.get('well_type', 'unknown')
+                    
+                    # For controls display, ALWAYS use control-specific well_names and indices
+                    # If variable exists in controls, use control definition directly
+                    if var_name in control_vars:
+                        # Use control definition for controls display - this is the source of truth
+                        control_var_config = control_vars[var_name]
+                        # Get well_names from control config (should match ROM config exactly)
+                        well_names_list = control_var_config.get('well_names', [])
+                        # Get indices from control config (should match ROM config exactly)
+                        indices = control_var_config.get('indices', [])
+                        # Also update well_type from control config to ensure consistency
+                        well_type = control_var_config.get('well_type', well_type)
+                    else:
+                        # Variable only in observations, use observation values
+                        well_names_list = var_config.get('well_names', [])
+                        indices = var_config.get('indices', [])
+                    
+                    unit_display = var_config.get('unit_display', '')
+                    
+                    # Checkbox for selecting as control
+                    # Default: selected if in ROM config controls
+                    default_selected = var_name in control_vars
+                    if var_name not in self.control_selections:
+                        checkbox = widgets.Checkbox(
+                            value=default_selected,
+                            description=f"{var_name}",
+                            style={'description_width': '120px'},
+                            layout=widgets.Layout(width='150px', margin='5px 0px')
+                        )
+                        self.control_selections[var_name] = checkbox
+                    else:
+                        checkbox = self.control_selections[var_name]
+                    
+                    # Get indices for controls (similar to observations)
+                    indices_str = f" - indices: {indices}" if indices else ""
+                    
+                    # Display name and info in separate label for better layout (no truncation)
+                    display_label = widgets.HTML(
+                        f"<div style='margin-left: 10px; width: 600px;'>"
+                        f"<b>{display_name}</b><br/>"
+                        f"<span style='color: #666; font-size: 0.9em;'>{well_type.title()}: {', '.join(well_names_list)} ({unit_display}){indices_str}</span>"
+                        f"</div>",
+                        layout=widgets.Layout(width='650px')
+                    )
+                
+                    action_widgets.append(widgets.HBox([checkbox, display_label], layout=widgets.Layout(width='100%')))
+                    
+                    # Range inputs (shown if checkbox is checked)
+                    if var_name not in self.variable_range_widgets:
+                        self.variable_range_widgets[var_name] = {}
+                    
+                    # Get detected ranges for this variable
+                    var_range_info = variable_ranges.get(var_name, {})
+                    default_min = var_range_info.get('min', 0.0) if var_range_info else 0.0
+                    default_max = var_range_info.get('max', 1000.0) if var_range_info else 1000.0
+                    
+                    # Create range inputs for each well
+                    range_container = widgets.VBox([])
+                    range_widgets = {}
+                    
+                    for well_name in well_names_list:
+                        # Get per-well range if available
+                        well_ranges = var_range_info.get('well_ranges', {})
+                        well_min = well_ranges.get(well_name, {}).get('min', default_min) if well_ranges else default_min
+                        well_max = well_ranges.get(well_name, {}).get('max', default_max) if well_ranges else default_max
+                        
+                        min_input = widgets.FloatText(
+                            value=well_min,
+                            description=f'{well_name} Min:',
+                            style={'description_width': '80px'},
+                            layout=widgets.Layout(width='150px')
+                        )
+                        max_input = widgets.FloatText(
+                            value=well_max,
+                            description=f'Max:',
+                            style={'description_width': '40px'},
+                            layout=widgets.Layout(width='120px')
+                        )
+                        
+                        range_widgets[well_name] = {'min': min_input, 'max': max_input}
+                        range_container.children = list(range_container.children) + [
+                            widgets.HBox([min_input, max_input], layout=widgets.Layout(margin='2px 0px 2px 30px'))
+                        ]
+                    
+                    self.variable_range_widgets[var_name] = range_widgets
+                    
+                    # Show/hide range inputs based on checkbox value
+                    def make_toggle_handler(var_name, range_container, widgets_list):
+                        def toggle_handler(change):
+                            current_children = list(self.action_tab.children)
+                            if change['new']:
+                                if range_container not in current_children:
+                                    # Find the position after the checkbox
+                                    checkbox_idx = None
+                                    for i, widget in enumerate(current_children):
+                                        if isinstance(widget, widgets.HBox) and len(widget.children) > 0:
+                                            if hasattr(widget.children[0], 'description') and var_name in str(widget.children[0].description):
+                                                checkbox_idx = i
+                                                break
+                                    if checkbox_idx is not None:
+                                        current_children.insert(checkbox_idx + 1, range_container)
+                                    else:
+                                        current_children.append(range_container)
+                                    self.action_tab.children = current_children
+                            else:
+                                if range_container in current_children:
+                                    current_children.remove(range_container)
+                                    self.action_tab.children = current_children
+                        return toggle_handler
+                    
+                    checkbox.observe(make_toggle_handler(var_name, range_container, action_widgets), names='value')
+                    
+                    # Initially show if selected
+                    if checkbox.value:
+                        action_widgets.append(range_container)
+            
+            # Show injector variables
+            if injector_vars:
+                action_widgets.append(widgets.HTML("<p style='font-weight: bold; margin-top: 15px; color: #d32f2f;'>💧 Injector Variables:</p>"))
+                for var_name in injector_vars:
+                    if var_name not in all_vars:
+                        continue
+                    
+                    var_config = all_vars[var_name]
+                    display_name = var_config.get('display_name', var_name)
+                    well_type = var_config.get('well_type', 'unknown')
+                    
+                    # For controls display, ALWAYS use control-specific well_names and indices
+                    # If variable exists in controls, use control definition directly
+                    if var_name in control_vars:
+                        # Use control definition for controls display - this is the source of truth
+                        control_var_config = control_vars[var_name]
+                        # Get well_names from control config (should match ROM config exactly)
+                        well_names_list = control_var_config.get('well_names', [])
+                        # Get indices from control config (should match ROM config exactly)
+                        indices = control_var_config.get('indices', [])
+                        # Also update well_type from control config to ensure consistency
+                        well_type = control_var_config.get('well_type', well_type)
+                    else:
+                        # Variable only in observations, use observation values
+                        well_names_list = var_config.get('well_names', [])
+                        indices = var_config.get('indices', [])
+                    
+                    unit_display = var_config.get('unit_display', '')
+                    
+                    # Checkbox for selecting as control
+                    # Default: selected if in ROM config controls
+                    default_selected = var_name in control_vars
+                    if var_name not in self.control_selections:
+                        checkbox = widgets.Checkbox(
+                            value=default_selected,
+                            description=f"{var_name}",
+                            style={'description_width': '120px'},
+                            layout=widgets.Layout(width='150px', margin='5px 0px')
+                        )
+                        self.control_selections[var_name] = checkbox
+                    else:
+                        checkbox = self.control_selections[var_name]
+                    
+                    # Get indices for controls (similar to observations)
+                    indices_str = f" - indices: {indices}" if indices else ""
+                    
+                    # Display name and info in separate label for better layout (no truncation)
+                    display_label = widgets.HTML(
+                        f"<div style='margin-left: 10px; width: 600px;'>"
+                        f"<b>{display_name}</b><br/>"
+                        f"<span style='color: #666; font-size: 0.9em;'>{well_type.title()}: {', '.join(well_names_list)} ({unit_display}){indices_str}</span>"
+                        f"</div>",
+                        layout=widgets.Layout(width='650px')
+                    )
+                    
+                    action_widgets.append(widgets.HBox([checkbox, display_label], layout=widgets.Layout(width='100%')))
+                    
+                    # Range inputs (shown if checkbox is checked)
+                    if var_name not in self.variable_range_widgets:
+                        self.variable_range_widgets[var_name] = {}
+                    
+                    # Get detected ranges for this variable
+                    var_range_info = variable_ranges.get(var_name, {})
+                    default_min = var_range_info.get('min', 0.0) if var_range_info else 0.0
+                    default_max = var_range_info.get('max', 1000.0) if var_range_info else 1000.0
+                    
+                    # Create range inputs for each well
+                    range_container = widgets.VBox([])
+                    range_widgets = {}
+                    
+                    for well_name in well_names_list:
+                        # Get per-well range if available
+                        well_ranges = var_range_info.get('well_ranges', {})
+                        well_min = well_ranges.get(well_name, {}).get('min', default_min) if well_ranges else default_min
+                        well_max = well_ranges.get(well_name, {}).get('max', default_max) if well_ranges else default_max
+                        
+                        min_input = widgets.FloatText(
+                            value=well_min,
+                            description=f'{well_name} Min:',
+                            style={'description_width': '80px'},
+                            layout=widgets.Layout(width='150px')
+                        )
+                        max_input = widgets.FloatText(
+                            value=well_max,
+                            description=f'Max:',
+                            style={'description_width': '40px'},
+                            layout=widgets.Layout(width='120px')
+                        )
+                        
+                        range_widgets[well_name] = {'min': min_input, 'max': max_input}
+                        range_container.children = list(range_container.children) + [
+                            widgets.HBox([min_input, max_input], layout=widgets.Layout(margin='2px 0px 2px 30px'))
+                        ]
+                    
+                    self.variable_range_widgets[var_name] = range_widgets
+                    
+                    # Show/hide range inputs based on checkbox value
+                    def make_toggle_handler(var_name, range_container, widgets_list):
+                        def toggle_handler(change):
+                            current_children = list(self.action_tab.children)
+                            if change['new']:
+                                if range_container not in current_children:
+                                    # Find the position after the checkbox
+                                    checkbox_idx = None
+                                    for i, widget in enumerate(current_children):
+                                        if isinstance(widget, widgets.HBox) and len(widget.children) > 0:
+                                            if hasattr(widget.children[0], 'description') and var_name in str(widget.children[0].description):
+                                                checkbox_idx = i
+                                                break
+                                    if checkbox_idx is not None:
+                                        current_children.insert(checkbox_idx + 1, range_container)
+                                    else:
+                                        current_children.append(range_container)
+                                    self.action_tab.children = current_children
+                            else:
+                                if range_container in current_children:
+                                    current_children.remove(range_container)
+                                    self.action_tab.children = current_children
+                        return toggle_handler
+                    
+                    checkbox.observe(make_toggle_handler(var_name, range_container, action_widgets), names='value')
+                    
+                    # Initially show if selected
+                    if checkbox.value:
+                        action_widgets.append(range_container)
+        
+        # Observations Selection Section
+        action_widgets.append(widgets.HTML("<hr style='margin: 20px 0;'>"))
+        action_widgets.append(widgets.HTML("<h4>📊 Select Observation Variables</h4>"))
+        action_widgets.append(widgets.HTML("<p><i>Select which variables will be used as observations (measured outputs) for the RL agent. All variables from ROM config are shown below:</i></p>"))
+        
+        # Show ALL variables (from both controls and observations) so user can select what they want
+        # Default selection based on ROM config observations
+        if not all_vars:
+            action_widgets.append(widgets.HTML("<p style='color: #ff9800;'><i>⚠️ No variables found in ROM config. Please ensure ROM_Refactored/config.yaml has controls/observations defined.</i></p>"))
+        else:
+            # Create checkboxes for each variable
+            for var_name in combined_order:
+                if var_name not in all_vars:
+                    continue
+                
+                var_config = all_vars[var_name]
+                display_name = var_config.get('display_name', var_name)
+                well_type = var_config.get('well_type', 'unknown')
+                
+                # For observations display, prioritize observation-specific well_names and indices
+                # If variable exists in both controls and observations, use observation version
+                if var_name in obs_vars:
+                    # Use observation definition for observations display
+                    obs_var_config = obs_vars[var_name]
+                    well_names_list = obs_var_config.get('well_names', var_config.get('well_names', []))
+                    indices = obs_var_config.get('indices', var_config.get('indices', []))
+                else:
+                    # Variable only in controls, use control values
+                    well_names_list = var_config.get('well_names', [])
+                    indices = var_config.get('indices', [])
+                
+                unit_display = var_config.get('unit_display', '')
+                
+                # Checkbox for selecting as observation
+                # Default: selected if in ROM config observations
+                default_selected = var_name in obs_vars
+                if var_name not in self.observation_selections:
+                    checkbox = widgets.Checkbox(
+                        value=default_selected,
+                        description=f"{var_name}",
+                        style={'description_width': '120px'},
+                        layout=widgets.Layout(width='150px', margin='5px 0px')
+                    )
+                    self.observation_selections[var_name] = checkbox
+                else:
+                    checkbox = self.observation_selections[var_name]
+                
+                # Display name and info in separate label for better layout (no truncation)
+                indices_str = f" - indices: {indices}" if indices else ""
+                display_label = widgets.HTML(
+                    f"<div style='margin-left: 10px; width: 600px;'>"
+                    f"<b>{display_name}</b><br/>"
+                    f"<span style='color: #666; font-size: 0.9em;'>{well_type.title()}: {', '.join(well_names_list)} ({unit_display}){indices_str}</span>"
+                    f"</div>",
+                    layout=widgets.Layout(width='650px')
+                )
+                
+                action_widgets.append(widgets.HBox([checkbox, display_label], layout=widgets.Layout(width='100%')))
         
         self.action_tab.children = action_widgets
     
@@ -1931,37 +3000,76 @@ class RLConfigurationDashboard:
         """Re-detect action ranges from H5 files and update the dashboard"""
         print("🔄 RE-DETECTING ACTION RANGES...")
         
+        # Preserve current selections before refresh
+        preserved_control_selections = {}
+        preserved_observation_selections = {}
+        
+        if hasattr(self, 'control_selections'):
+            for var_name, checkbox in self.control_selections.items():
+                preserved_control_selections[var_name] = checkbox.value
+        
+        if hasattr(self, 'observation_selections'):
+            for var_name, checkbox in self.observation_selections.items():
+                preserved_observation_selections[var_name] = checkbox.value
+        
         # Get current state folder
         current_state_folder = self.state_folder_input.value.strip() if hasattr(self, 'state_folder_input') else self.state_folder
         
-        # Re-run detection
-        detected_ranges = auto_detect_action_ranges_from_h5(data_dir=current_state_folder)
+        # Try to find ROM config path
+        rom_config_path = None
+        try:
+            import os
+            from pathlib import Path
+            current_dir = Path(__file__).parent.parent.parent
+            rom_config_path = current_dir / 'ROM_Refactored' / 'config.yaml'
+            if not os.path.exists(rom_config_path):
+                rom_config_path = None
+        except Exception:
+            rom_config_path = None
         
-        # Update default actions
+        # Re-run detection with ROM config synchronization
+        detected_ranges = auto_detect_action_ranges_from_h5(data_dir=current_state_folder, rom_config_path=rom_config_path)
+        
+        # Update default actions (for backward compatibility)
         self.default_actions = {
-            'bhp_min': detected_ranges['bhp_min'],
-            'bhp_max': detected_ranges['bhp_max'],
-            'gas_inj_min': detected_ranges['gas_inj_min'],
-            'gas_inj_max': detected_ranges['gas_inj_max']
+            'bhp_min': detected_ranges.get('bhp_min', 1087.78),
+            'bhp_max': detected_ranges.get('bhp_max', 1305.34),
+            'water_inj_min': detected_ranges.get('water_inj_min', 0.0),
+            'water_inj_max': detected_ranges.get('water_inj_max', 1000.0)
         }
         
         # Update detection details
         self.detection_details = detected_ranges['detection_details']
         self.detection_successful = detected_ranges['detection_successful']
         
-        # Update the action widgets with new values
-        if hasattr(self, 'bhp_ranges'):
-            for well_ranges in self.bhp_ranges.values():
-                well_ranges['min'].value = self.default_actions['bhp_min']
-                well_ranges['max'].value = self.default_actions['bhp_max']
-        
-        if hasattr(self, 'gas_ranges'):
-            for well_ranges in self.gas_ranges.values():
-                well_ranges['min'].value = self.default_actions['gas_inj_min']
-                well_ranges['max'].value = self.default_actions['gas_inj_max']
+        # Update variable range widgets with new detected values
+        variable_ranges = detected_ranges['detection_details'].get('variable_ranges', {})
+        if hasattr(self, 'variable_range_widgets'):
+            for var_name, var_range_info in variable_ranges.items():
+                if var_name in self.variable_range_widgets:
+                    well_ranges = var_range_info.get('well_ranges', {})
+                    for well_name, well_widgets in self.variable_range_widgets[var_name].items():
+                        if well_name in well_ranges:
+                            well_widgets['min'].value = well_ranges[well_name]['min']
+                            well_widgets['max'].value = well_ranges[well_name]['max']
+                        else:
+                            # Use overall min/max if per-well ranges not available
+                            well_widgets['min'].value = var_range_info.get('min', 0.0)
+                            well_widgets['max'].value = var_range_info.get('max', 1000.0)
         
         # Refresh the entire action tab to show updated detection status
         self._update_action_tab()
+        
+        # Restore preserved selections
+        if hasattr(self, 'control_selections'):
+            for var_name, was_selected in preserved_control_selections.items():
+                if var_name in self.control_selections:
+                    self.control_selections[var_name].value = was_selected
+        
+        if hasattr(self, 'observation_selections'):
+            for var_name, was_selected in preserved_observation_selections.items():
+                if var_name in self.observation_selections:
+                    self.observation_selections[var_name].value = was_selected
         
         print("✅ Action ranges refreshed successfully!")
     
@@ -2459,6 +3567,14 @@ Where:
                 # Store in a way that can be accessed from training script
                 self._store_config_for_training()
                 
+                # Update ROM config file with selected controls and observations
+                print("\n📝 Updating ROM config file with selected controls and observations...")
+                rom_config_updated = self._update_rom_config_file()
+                if rom_config_updated:
+                    print("   ✅ ROM config file updated successfully!")
+                else:
+                    print("   ⚠️ Could not update ROM config file (non-critical)")
+                
                 # NEW: Load ROM model and generate Z0 immediately
                 print("\n🚀 Pre-loading ROM model and generating Z0...")
                 success = self._load_rom_and_generate_z0()
@@ -2552,6 +3668,48 @@ Where:
                     print(f"      ✅ Updated n_channels: {rom_config.model.get('n_channels')} → {channels}")
                     config_updated = True
             
+            # 🎯 CRITICAL: Extract transition encoder architecture from checkpoint file
+            # This ensures perfect match regardless of config file state
+            transition_file = selected_rom.get('transition')
+            if transition_file and os.path.exists(transition_file):
+                try:
+                    print("   🔍 Extracting transition encoder architecture from checkpoint...")
+                    checkpoint = torch.load(transition_file, map_location='cpu', weights_only=False)
+                    
+                    # Extract encoder hidden dimensions from checkpoint state_dict
+                    encoder_hidden_dims = []
+                    layer_idx = 0
+                    while True:
+                        weight_key = f"trans_encoder.{layer_idx}.0.weight"
+                        if weight_key in checkpoint:
+                            # Get output dimension from weight shape
+                            weight_shape = checkpoint[weight_key].shape
+                            out_dim = weight_shape[0]
+                            encoder_hidden_dims.append(out_dim)
+                            layer_idx += 1
+                        else:
+                            break
+                    
+                    if encoder_hidden_dims:
+                        # The last layer outputs to latent_dim, so we exclude it
+                        # We only want the hidden layers
+                        if len(encoder_hidden_dims) > 1:
+                            encoder_hidden_dims = encoder_hidden_dims[:-1]
+                        
+                        current_dims = rom_config.transition.get('encoder_hidden_dims', [])
+                        if current_dims != encoder_hidden_dims:
+                            rom_config.transition['encoder_hidden_dims'] = encoder_hidden_dims
+                            print(f"      ✅ Updated encoder_hidden_dims: {current_dims} → {encoder_hidden_dims}")
+                            config_updated = True
+                        else:
+                            print(f"      ✅ encoder_hidden_dims already match: {encoder_hidden_dims}")
+                    else:
+                        print(f"      ⚠️ Could not extract encoder_hidden_dims from checkpoint")
+                except Exception as e:
+                    print(f"      ⚠️ Could not extract transition architecture from checkpoint: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
             if config_updated:
                 print("   ✅ ROM config updated to match selected model architecture")
             else:
@@ -2643,13 +3801,36 @@ Where:
                 selected_states = []
                 state_scaling = {}
                 
-                for state_name, checkbox in self.state_checkboxes.items():
-                    if checkbox.value:
-                        selected_states.append(state_name)
-                        state_scaling[state_name] = self.scaling_radios[state_name].value
+                # Get states in training order if available
+                display_order = self.config.get('available_states', [])
+                if hasattr(self, 'training_channel_order') and self.training_channel_order:
+                    # Filter to training order
+                    display_order = [s for s in self.training_channel_order if s in display_order]
                 
-                config['selected_states'] = selected_states
+                for state_name in display_order:
+                    if state_name in self.state_checkboxes:
+                        checkbox = self.state_checkboxes[state_name]
+                        if checkbox.value:
+                            selected_states.append(state_name)
+                            state_scaling[state_name] = self.scaling_radios[state_name].value
+                
+                # Store selected states in training order
+                if hasattr(self, 'training_channel_order') and self.training_channel_order:
+                    # Reorder to match training channel order
+                    ordered_selected = [s for s in self.training_channel_order if s in selected_states]
+                    # Add any selected states not in training order (shouldn't happen, but be safe)
+                    for s in selected_states:
+                        if s not in ordered_selected:
+                            ordered_selected.append(s)
+                    config['selected_states'] = ordered_selected
+                else:
+                    config['selected_states'] = selected_states
+                
                 config['state_scaling'] = state_scaling
+                
+                # Also store training channel order for use in generate_z0_from_dashboard
+                if hasattr(self, 'training_channel_order') and self.training_channel_order:
+                    config['training_channel_order'] = self.training_channel_order
             
             # ROM model selection
             if hasattr(self, 'rom_selector') and self.rom_selector is not None:
@@ -2665,28 +3846,56 @@ Where:
             else:
                 print("      ⚠️ Warning: ROM selector not available. Please scan folders first.")
             
-            # Action configuration
-            if hasattr(self, 'bhp_ranges'):
-                action_ranges = {
-                    'bhp': {},
-                    'gas_injection': {},
-                    'num_wells': self.num_wells_input.value,
-                    'num_producers': self.num_prod_input.value
-                }
-                
-                for well, ranges in self.bhp_ranges.items():
-                    action_ranges['bhp'][well] = {
-                        'min': ranges['min'].value,
-                        'max': ranges['max'].value
-                    }
-                
-                for well, ranges in self.gas_ranges.items():
-                    action_ranges['gas_injection'][well] = {
-                        'min': ranges['min'].value,
-                        'max': ranges['max'].value
-                    }
-                
-                config['action_ranges'] = action_ranges
+            # Action configuration - collect selected controls and observations
+            detection_details = getattr(self, 'detection_details', {})
+            well_names_map = detection_details.get('well_names', {})
+            producer_names = well_names_map.get('producers', [f'P{i+1}' for i in range(3)])
+            injector_names = well_names_map.get('injectors', [f'I{i+1}' for i in range(3)])
+            num_producers = detection_details.get('num_producers', len(producer_names))
+            num_injectors = detection_details.get('num_injectors', len(injector_names))
+            
+            # Collect selected controls from checkboxes
+            selected_controls = {}
+            if hasattr(self, 'control_selections') and self.control_selections:
+                for var_name, checkbox in self.control_selections.items():
+                    if checkbox.value:  # If selected as control
+                        # Get ranges from widgets
+                        ranges = {}
+                        if var_name in self.variable_range_widgets:
+                            for well_name, well_widgets in self.variable_range_widgets[var_name].items():
+                                ranges[well_name] = {
+                                    'min': well_widgets['min'].value,
+                                    'max': well_widgets['max'].value
+                                }
+                        selected_controls[var_name] = ranges
+            
+            # Collect selected observations from checkboxes
+            selected_observations = []
+            if hasattr(self, 'observation_selections') and self.observation_selections:
+                for var_name, checkbox in self.observation_selections.items():
+                    if checkbox.value:  # If selected as observation
+                        selected_observations.append(var_name)
+            
+            # Store action configuration
+            action_ranges = {
+                'controls': selected_controls,
+                'observations': selected_observations,
+                'well_names': well_names_map,
+                'num_producers': num_producers,
+                'num_injectors': num_injectors,
+                'num_wells': num_producers + num_injectors
+            }
+            
+            # Legacy support: Also store in old format for backward compatibility
+            # Extract BHP and water injection if they exist
+            if 'BHP' in selected_controls:
+                action_ranges['bhp'] = selected_controls['BHP']
+            if 'WATRATRC' in selected_controls:
+                action_ranges['water_injection'] = selected_controls['WATRATRC']
+            if 'ENERGYRATE' in selected_controls:
+                action_ranges['gas_injection'] = selected_controls['ENERGYRATE']
+            
+            config['action_ranges'] = action_ranges
             
             # Economic configuration
             if hasattr(self, 'economic_inputs'):
@@ -2741,7 +3950,11 @@ Where:
             
             # 🎯 CRITICAL: Calculate TRAINING-ONLY normalization parameters (fixes data leakage)
             print("      🔄 Calculating TRAINING-ONLY normalization parameters...")
-            training_params = calculate_training_only_normalization_params(self.state_folder)
+            # Get selected states from config
+            selected_states = config.get('selected_states', [])
+            # Normalize state folder path
+            state_folder_normalized = os.path.normpath(self.state_folder)
+            training_params = calculate_training_only_normalization_params(state_folder_normalized, selected_states=selected_states)
             if training_params:
                 config['training_only_normalization_params'] = training_params
                 print("      ✅ TRAINING-ONLY normalization parameters calculated successfully")
@@ -2891,10 +4104,145 @@ Where:
                     with open(config_file, 'w') as f:
                         json.dump(json_config, f, indent=4)
                     print(f"💾 Configuration saved to {config_file}")
+                    
+                    # Also update ROM config file
+                    print("\n📝 Updating ROM config file with selected controls and observations...")
+                    rom_config_updated = self._update_rom_config_file()
+                    if rom_config_updated:
+                        print("   ✅ ROM config file updated successfully!")
+                    else:
+                        print("   ⚠️ Could not update ROM config file (non-critical)")
                 except Exception as e:
                     print(f"❌ Error saving configuration: {e}")
             else:
                 print("❌ No configuration to save!")
+    
+    def _update_rom_config_file(self):
+        """
+        Update ROM_Refactored/config.yaml with selected controls and observations from dashboard
+        
+        Returns:
+            bool: True if update was successful, False otherwise
+        """
+        try:
+            import yaml
+            from pathlib import Path
+            
+            # Get ROM config path
+            current_dir = Path(__file__).parent.parent.parent
+            rom_config_path = current_dir / 'ROM_Refactored' / 'config.yaml'
+            
+            if not rom_config_path.exists():
+                print(f"   ⚠️ ROM config file not found at {rom_config_path}")
+                return False
+            
+            # Load current ROM config
+            with open(rom_config_path, 'r', encoding='utf-8') as f:
+                rom_config = yaml.safe_load(f)
+            
+            # Get selected controls and observations from collected configuration
+            action_ranges = self.config.get('action_ranges', {})
+            selected_controls = action_ranges.get('controls', {})
+            selected_observations = action_ranges.get('observations', [])
+            
+            # Debug: Print what we're updating
+            print(f"   📋 Selected Controls: {list(selected_controls.keys())}")
+            print(f"   📋 Selected Observations: {selected_observations}")
+            
+            # Get variable definitions from detection details
+            detection_details = getattr(self, 'detection_details', {})
+            control_vars = detection_details.get('control_variables', {})
+            obs_vars = detection_details.get('observation_definitions', {})
+            
+            # If not in detection_details, try loading from ROM config directly
+            if not control_vars or not obs_vars:
+                if 'data' in rom_config:
+                    controls_config = rom_config['data'].get('controls', {})
+                    observations_config = rom_config['data'].get('observations', {})
+                    if controls_config and 'variables' in controls_config:
+                        control_vars = controls_config['variables']
+                    if observations_config and 'variables' in observations_config:
+                        obs_vars = observations_config['variables']
+            
+            # Combine all variables (controls + observations) to get full definitions
+            all_vars = {}
+            all_vars.update(control_vars)
+            all_vars.update(obs_vars)
+            
+            # Ensure data section exists
+            if 'data' not in rom_config:
+                rom_config['data'] = {}
+            
+            # Update controls section
+            controls_variables = {}
+            controls_order = []
+            num_controls = 0
+            
+            for var_name in selected_controls.keys():
+                if var_name in all_vars:
+                    var_def = all_vars[var_name].copy()
+                    # Remove observation-specific fields (indices, group_name)
+                    var_def.pop('indices', None)
+                    var_def.pop('group_name', None)
+                    # Ensure required fields are present
+                    if 'name' not in var_def:
+                        var_def['name'] = var_name
+                    controls_variables[var_name] = var_def
+                    controls_order.append(var_name)
+                    # Count number of wells for this control
+                    num_wells = var_def.get('num_wells', len(var_def.get('well_names', [])))
+                    num_controls += num_wells
+            
+            rom_config['data']['controls'] = {
+                'variables': controls_variables,
+                'order': controls_order,
+                'num_controls': num_controls
+            }
+            
+            # Update observations section
+            observations_variables = {}
+            observations_order = []
+            num_observations = 0
+            current_index = 0
+            
+            for var_name in selected_observations:
+                if var_name in all_vars:
+                    var_def = all_vars[var_name].copy()
+                    # Ensure required fields are present
+                    if 'name' not in var_def:
+                        var_def['name'] = var_name
+                    # Calculate and set indices correctly
+                    num_wells = var_def.get('num_wells', len(var_def.get('well_names', [])))
+                    var_def['indices'] = list(range(current_index, current_index + num_wells))
+                    current_index += num_wells
+                    num_observations += num_wells
+                    # Preserve group_name if it exists (for observations)
+                    if 'group_name' not in var_def and var_name in obs_vars:
+                        var_def['group_name'] = obs_vars[var_name].get('group_name', f'{var_def.get("display_name", var_name)} (All {var_def.get("well_type", "Wells").title()})')
+                    observations_variables[var_name] = var_def
+                    observations_order.append(var_name)
+            
+            rom_config['data']['observations'] = {
+                'variables': observations_variables,
+                'order': observations_order,
+                'num_observations': num_observations
+            }
+            
+            # Save updated config back to file
+            with open(rom_config_path, 'w', encoding='utf-8') as f:
+                yaml.dump(rom_config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            
+            print(f"   📝 Updated controls: {controls_order} (num_controls={num_controls})")
+            print(f"   📝 Updated observations: {observations_order} (num_observations={num_observations})")
+            print(f"   💾 Saved to: {rom_config_path}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"   ❌ Error updating ROM config: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
     
     def _convert_for_json(self, obj):
         """Convert numpy types to JSON-serializable types"""
@@ -3092,52 +4440,61 @@ def get_action_scaling_params(rl_config):
     """
     action_ranges = rl_config.get('action_ranges', {})
     
+    # Get selected controls (new dynamic structure)
+    selected_controls = action_ranges.get('controls', {})
+    
     scaling_params = {
-        'bhp': {},
-        'gas_injection': {},
+        'controls': {},  # Dynamic control variables
         'num_producers': action_ranges.get('num_producers', 3),
-        'num_injectors': action_ranges.get('num_wells', 6) - action_ranges.get('num_producers', 3)
+        'num_injectors': action_ranges.get('num_injectors', 3)
     }
     
-    # BHP scaling parameters
-    bhp_ranges = action_ranges.get('bhp', {})
-    if bhp_ranges:
-        # Aggregate min and max across all wells
-        bhp_mins = [ranges['min'] for ranges in bhp_ranges.values()]
-        bhp_maxs = [ranges['max'] for ranges in bhp_ranges.values()]
-        
-        scaling_params['bhp'] = {
-            'min': min(bhp_mins) if bhp_mins else 1087.78,
-            'max': max(bhp_maxs) if bhp_maxs else 1305.0,
-            'ranges': bhp_ranges
-        }
-    else:
-        # Default values
-        scaling_params['bhp'] = {
-            'min': 1087.78,
-            'max': 1305.0,
-            'ranges': {}
-        }
+    # Process each selected control variable
+    for var_name, well_ranges in selected_controls.items():
+        if well_ranges:
+            # Aggregate min and max across all wells
+            var_mins = [ranges['min'] for ranges in well_ranges.values()]
+            var_maxs = [ranges['max'] for ranges in well_ranges.values()]
+            
+            scaling_params['controls'][var_name] = {
+                'min': min(var_mins) if var_mins else 0.0,
+                'max': max(var_maxs) if var_maxs else 1000.0,
+                'ranges': well_ranges
+            }
     
-    # Gas injection scaling parameters
-    gas_ranges = action_ranges.get('gas_injection', {})
-    if gas_ranges:
-        # Aggregate min and max across all wells
-        gas_mins = [ranges['min'] for ranges in gas_ranges.values()]
-        gas_maxs = [ranges['max'] for ranges in gas_ranges.values()]
-        
-        scaling_params['gas_injection'] = {
-            'min': min(gas_mins) if gas_mins else 10064800.2,
-            'max': max(gas_maxs) if gas_maxs else 24720266.0,
-            'ranges': gas_ranges
-        }
-    else:
-        # Default values
-        scaling_params['gas_injection'] = {
-            'min': 10064800.2,
-            'max': 24720266.0,
-            'ranges': {}
-        }
+    # Legacy support: Also provide old format for backward compatibility
+    if 'bhp' in action_ranges:
+        bhp_ranges = action_ranges['bhp']
+        if bhp_ranges:
+            bhp_mins = [ranges['min'] for ranges in bhp_ranges.values()]
+            bhp_maxs = [ranges['max'] for ranges in bhp_ranges.values()]
+            scaling_params['bhp'] = {
+                'min': min(bhp_mins) if bhp_mins else 1087.78,
+                'max': max(bhp_maxs) if bhp_maxs else 1305.0,
+                'ranges': bhp_ranges
+            }
+    
+    if 'water_injection' in action_ranges:
+        water_ranges = action_ranges['water_injection']
+        if water_ranges:
+            water_mins = [ranges['min'] for ranges in water_ranges.values()]
+            water_maxs = [ranges['max'] for ranges in water_ranges.values()]
+            scaling_params['water_injection'] = {
+                'min': min(water_mins) if water_mins else 0.0,
+                'max': max(water_maxs) if water_maxs else 1000.0,
+                'ranges': water_ranges
+            }
+    
+    if 'gas_injection' in action_ranges:
+        gas_ranges = action_ranges['gas_injection']
+        if gas_ranges:
+            gas_mins = [ranges['min'] for ranges in gas_ranges.values()]
+            gas_maxs = [ranges['max'] for ranges in gas_ranges.values()]
+            scaling_params['gas_injection'] = {
+                'min': min(gas_mins) if gas_mins else 10064800.2,
+                'max': max(gas_maxs) if gas_maxs else 24720266.0,
+                'ranges': gas_ranges
+            }
     
     return scaling_params
 
@@ -3200,14 +4557,28 @@ def update_config_with_dashboard(config, rl_config):
         config.rl_model['reservoir']['num_injectors'] = action_ranges.get('num_wells', 6) - action_ranges.get('num_producers', 3)
     
     # Store action ranges in ROM training normalization section (for compatibility)
+    # Handle new dynamic control structure
+    selected_controls = action_ranges.get('controls', {})
+    
+    if 'rom_training_normalization' not in config.rl_model:
+        config.rl_model['rom_training_normalization'] = {}
+    
+    # Store each control variable's parameters
+    for var_name, well_ranges in selected_controls.items():
+        if well_ranges:
+            var_mins = [ranges['min'] for ranges in well_ranges.values()]
+            var_maxs = [ranges['max'] for ranges in well_ranges.values()]
+            config.rl_model['rom_training_normalization'][f'{var_name.lower()}_params'] = {
+                'min': min(var_mins) if var_mins else 0.0,
+                'max': max(var_maxs) if var_maxs else 1000.0
+            }
+    
+    # Legacy support: Also handle old format
     if 'bhp' in action_ranges:
         bhp_ranges = action_ranges['bhp']
         if bhp_ranges:
             bhp_mins = [ranges['min'] for ranges in bhp_ranges.values()]
             bhp_maxs = [ranges['max'] for ranges in bhp_ranges.values()]
-            # Store in ROM training section instead of action_constraints
-            if 'rom_training_normalization' not in config.rl_model:
-                config.rl_model['rom_training_normalization'] = {}
             config.rl_model['rom_training_normalization']['bhp_params'] = {
                 'min': min(bhp_mins),
                 'max': max(bhp_maxs)
