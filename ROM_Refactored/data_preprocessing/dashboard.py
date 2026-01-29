@@ -801,10 +801,13 @@ class DataPreprocessingDashboard:
                         default_selected = True
                 else:
                     # Fallback to hard-coded defaults if config not available
-                    # Keeping BHP for first 3 wells (injectors), and ENERGYRATE and WATRATRC for last 3 wells (producers)
+                    # CORRECT observation defaults:
+                    # - BHP: INJECTORS (first 3 wells, indices 0,1,2) - Injector bottom-hole pressure
+                    # - ENERGYRATE: PRODUCERS (last 3 wells, indices 3,4,5) - Energy production rate
+                    # - WATRATRC: PRODUCERS (last 3 wells, indices 3,4,5) - Water PRODUCTION rate
                     if var_name == 'BHP' and well_idx < 3:  # Injector BHP (first 3 wells)
                         default_selected = True
-                    elif var_name == 'WATRATRC' and well_idx >= max(0, num_wells - 3):  # Water production (last 3 wells)
+                    elif var_name == 'WATRATRC' and well_idx >= max(0, num_wells - 3):  # Water PRODUCTION (last 3 wells = producers)
                         default_selected = True
                     elif var_name == 'ENERGYRATE' and well_idx >= max(0, num_wells - 3):  # Energy production (last 3 wells)
                         default_selected = True
@@ -961,8 +964,8 @@ class DataPreprocessingDashboard:
             num_controls = 0
             current_control_index = 0  # Track indices for controls
             
-            # Sort controls by well_type: injectors first, then producers
-            # This ensures WATRATRC (injectors) gets indices [0,1,2] and BHP (producers) gets [3,4,5]
+            # Sort controls by well_type: PRODUCERS first, then INJECTORS
+            # VERIFIED from actual H5 tensor: BHP (producers) gets indices [0,1,2] and WATRATRC (injectors) gets [3,4,5]
             def get_well_type_for_sorting(var_name, config):
                 """Determine well_type for sorting purposes"""
                 selected_wells = config.get('wells', [])
@@ -980,10 +983,11 @@ class DataPreprocessingDashboard:
                     return 'producers'
                 return 'unknown'
             
-            # Sort selected_controls: injectors first, then producers
+            # Sort selected_controls: PRODUCERS first (BHP), then INJECTORS (WATRATRC)
+            # This ensures BHP (producers) gets indices [0,1,2] and WATRATRC (injectors) gets [3,4,5]
             sorted_controls = sorted(
                 selected_controls.items(),
-                key=lambda x: (0 if get_well_type_for_sorting(x[0], x[1]) == 'injectors' else 1, x[0])
+                key=lambda x: (0 if get_well_type_for_sorting(x[0], x[1]) == 'producers' else 1, x[0])
             )
             
             for var_name, config in sorted_controls:
@@ -1129,8 +1133,30 @@ class DataPreprocessingDashboard:
                 # Update num_wells and well_names based on selected wells
                 var_def['num_wells'] = num_wells
                 
-                # Map selected_wells indices to actual well names based on well_type
-                well_type = var_def.get('well_type', 'unknown')
+                # CRITICAL: Determine well_type from selected_wells indices, not from old config
+                # This ensures correct mapping: injectors = first wells (0-2), producers = last wells (3-5)
+                if selected_wells and max(selected_wells) < num_injectors:
+                    # All selected wells are injectors (indices 0 to num_injectors-1)
+                    well_type = 'injectors'
+                elif selected_wells and min(selected_wells) >= num_injectors:
+                    # All selected wells are producers (indices num_injectors and above)
+                    well_type = 'producers'
+                else:
+                    # Mixed or unknown - use variable name hints
+                    # For OBSERVATIONS:
+                    # - BHP: INJECTORS (first 3 wells)
+                    # - ENERGYRATE: PRODUCERS (last 3 wells)
+                    # - WATRATRC: PRODUCERS (last 3 wells) - Water PRODUCTION rate
+                    if var_name == 'BHP':
+                        well_type = 'injectors'
+                    elif var_name in ['ENERGYRATE', 'WATRATRC']:
+                        well_type = 'producers'
+                    else:
+                        # Fallback to old well_type from config
+                        well_type = var_def.get('well_type', 'unknown')
+                
+                # Update well_type in var_def
+                var_def['well_type'] = well_type
                 
                 # Get well names based on well_type
                 if well_type == 'injectors' and 'injectors' in well_names_map:
@@ -1168,6 +1194,13 @@ class DataPreprocessingDashboard:
                 'order': observations_order,
                 'num_observations': num_observations
             }
+            
+            # Debug: Print what was saved for observations
+            print(f"   📝 DEBUG: Saved observations order: {observations_order}")
+            for var_name in observations_order:
+                if var_name in observations_variables:
+                    var_cfg = observations_variables[var_name]
+                    print(f"      {var_name}: well_type={var_cfg.get('well_type')}, well_names={var_cfg.get('well_names')}, indices={var_cfg.get('indices')}")
             
             # Save updated config back to file
             with open(rom_config_path, 'w', encoding='utf-8') as f:
@@ -1672,6 +1705,22 @@ class DataPreprocessingDashboard:
                         # Default to minmax for backward compatibility
                         self.control_normalization_preferences[var_name] = 'minmax'
         
+        # CRITICAL: Sort controls to ensure correct tensor order
+        # VERIFIED from actual H5 tensor: BHP (producers) first with indices [0,1,2], then WATRATRC (injectors) with indices [3,4,5]
+        # This sorting ensures the tensor order matches the trained ROM model
+        if self.selected_controls:
+            control_order = ['BHP', 'WATRATRC']  # Producers first, then injectors
+            sorted_controls = {}
+            for var_name in control_order:
+                if var_name in self.selected_controls:
+                    sorted_controls[var_name] = self.selected_controls[var_name]
+            # Add any other controls that aren't in the predefined order
+            for var_name, config in self.selected_controls.items():
+                if var_name not in sorted_controls:
+                    sorted_controls[var_name] = config
+            self.selected_controls = sorted_controls
+            print(f"  📋 Sorted controls order: {list(self.selected_controls.keys())}")
+        
         # Observations - collect well selections and normalization preferences
         self.selected_observations = {}
         self.observation_normalization_preferences = {}
@@ -1693,6 +1742,24 @@ class DataPreprocessingDashboard:
                     else:
                         # Default to minmax for backward compatibility
                         self.observation_normalization_preferences[var_name] = 'minmax'
+        
+        # CRITICAL: Sort observations to ensure correct tensor order
+        # ACTUAL observation order (verified from H5 tensor denormalization):
+        # - BHP: Injector BHP (indices 0-2) - values ~2000-5500 psi
+        # - WATRATRC: Water PRODUCTION rate (indices 3-5) - values ~7000-96000 bbl/day
+        # - ENERGYRATE: Energy production rate (indices 6-8) - values ~6e11-8e12 BTU/day
+        if self.selected_observations:
+            observation_order = ['BHP', 'WATRATRC', 'ENERGYRATE']  # ACTUAL H5 tensor order
+            sorted_observations = {}
+            for var_name in observation_order:
+                if var_name in self.selected_observations:
+                    sorted_observations[var_name] = self.selected_observations[var_name]
+            # Add any other observations that aren't in the predefined order
+            for var_name, config in self.selected_observations.items():
+                if var_name not in sorted_observations:
+                    sorted_observations[var_name] = config
+            self.selected_observations = sorted_observations
+            print(f"  📋 Sorted observations order: {list(self.selected_observations.keys())}")
         
         # Configuration summary
         training_channels = list(self.selected_training_channels.keys())

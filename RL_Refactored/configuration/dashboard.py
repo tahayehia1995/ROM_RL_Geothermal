@@ -1572,9 +1572,9 @@ class RLConfigurationDashboard:
         # Default economic parameters (current values from code)
         self.default_economics = {
             # Geothermal project parameters
-            'energy_production_revenue': 0.11,  # Revenue from energy production ($/kWh)
-            'water_production_reward': 5.0,     # Reward for water production ($/bbl)
-            'water_injection_cost': 10.0,      # Cost for water injection ($/bbl)
+            'energy_production_revenue': 0.11,  # Revenue from energy production ($/kWh) - POSITIVE
+            'water_production_cost': 5.0,       # Cost for water production disposal ($/bbl) - NEGATIVE
+            'water_injection_cost': 10.0,       # Cost for water injection ($/bbl) - NEGATIVE
             'btu_to_kwh': 0.000293071,          # BTU to kWh conversion factor
             'scale_factor': 1000000.0,          # Final scaling factor for reward normalization
             # Pre-project development parameters
@@ -3086,7 +3086,7 @@ class RLConfigurationDashboard:
         
         params = [
             ('energy_production_revenue', 'Energy Production Revenue ($/kWh)', self.default_economics['energy_production_revenue']),
-            ('water_production_reward', 'Water Production Reward ($/bbl)', self.default_economics['water_production_reward']),
+            ('water_production_cost', 'Water Production Disposal Cost ($/bbl)', self.default_economics['water_production_cost']),
             ('water_injection_cost', 'Water Injection Cost ($/bbl)', self.default_economics['water_injection_cost']),
             ('btu_to_kwh', 'BTU to kWh Conversion Factor', self.default_economics['btu_to_kwh']),
             ('scale_factor', 'Scale Factor', self.default_economics['scale_factor'])
@@ -3167,16 +3167,16 @@ class RLConfigurationDashboard:
             <div style='background-color: #f0f8ff; padding: 10px; border-left: 4px solid #4CAF50;'>
             <pre>
 Reward = (energy_production_revenue * energy_production_kWh
-        + water_production_reward * water_production_bbl
+        - water_production_cost * water_production_bbl
         - water_injection_cost * water_injection_bbl) / scale_factor
 
 Where:
-- energy_production_revenue: Revenue from energy production ($/kWh)
-- water_production_reward: Reward for water production ($/bbl)
-- water_injection_cost: Cost for water injection ($/bbl)
-- energy_production_kWh: Energy production rate (kWh/day)
-- water_production_bbl: Water production rate (bbl/day)
-- water_injection_bbl: Water injection rate (bbl/day)
+- energy_production_revenue: Revenue from energy production ($/kWh) - POSITIVE
+- water_production_cost: Cost for water disposal/handling ($/bbl) - NEGATIVE
+- water_injection_cost: Cost for water injection ($/bbl) - NEGATIVE
+- energy_production_kWh: Energy production rate (kWh/day) from producers
+- water_production_bbl: Water production rate (bbl/day) from producers
+- water_injection_bbl: Water injection rate (bbl/day) to injectors
 - scale_factor: Numerical scaling factor
             </pre>
             </div>
@@ -4512,10 +4512,10 @@ def get_reward_function_params(rl_config):
     
     # Default values for geothermal project
     defaults = {
-        'energy_production_revenue': 0.11,  # Revenue from energy production ($/kWh)
-        'water_production_reward': 5.0,     # Reward for water production ($/bbl)
-        'water_injection_cost': 10.0,       # Cost for water injection ($/bbl)
-        'btu_to_kwh': 0.000293071,         # BTU to kWh conversion factor
+        'energy_production_revenue': 0.11,  # Revenue from energy production ($/kWh) - POSITIVE
+        'water_production_cost': 5.0,       # Cost for water production disposal ($/bbl) - NEGATIVE
+        'water_injection_cost': 10.0,       # Cost for water injection ($/bbl) - NEGATIVE
+        'btu_to_kwh': 0.000293071,          # BTU to kWh conversion factor
         'scale_factor': 1000000.0           # Final scaling factor for reward normalization
     }
     
@@ -4690,11 +4690,19 @@ def create_rl_reward_function(rl_config):
     def reward_function(yobs, action, num_prod, num_inj):
         """
         Configured geothermal reward function based on dashboard parameters
-        Uses ROM config structure: [WATRATRC(0-2), BHP(3-5), ENERGYRATE(6-8)]
+        
+        CORRECT Observation order:
+        - BHP: indices [0,1,2] - INJECTOR Bottom-Hole Pressure (psi, wells 0,1,2)
+        - ENERGYRATE: indices [3,4,5] - Energy Production Rate (BTU/day, producers wells 3,4,5)
+        - WATRATRC: indices [6,7,8] - Water PRODUCTION Rate (bbl/day, producers wells 3,4,5)
+        
+        CORRECT Action/Control order:
+        - BHP: indices [0,1,2] - Producer Bottom-Hole Pressure (psi, producers)
+        - WATRATRC: indices [3,4,5] - Water Injection Rate (bbl/day, injectors)
         
         Args:
-            yobs: observations [WATRATRC(0-2), BHP(3-5), ENERGYRATE(6-8)]
-            action: actions [WATRATRC_injection(0-2), BHP(3-5)]  
+            yobs: observations in CORRECT order [BHP_inj(3), ENERGYRATE(3), WATRATRC_prod(3)]
+            action: actions in CORRECT order [BHP(3), WATRATRC_injection(3)]  
             num_prod: number of producers
             num_inj: number of injectors
             
@@ -4705,27 +4713,32 @@ def create_rl_reward_function(rl_config):
         
         # Extract parameters
         energy_production_revenue = reward_params['energy_production_revenue']  # $/kWh
-        water_production_reward = reward_params['water_production_reward']  # $/bbl
+        water_production_cost = reward_params.get('water_production_cost', reward_params.get('water_production_reward', 5.0))  # $/bbl
         water_injection_cost = reward_params['water_injection_cost']  # $/bbl
         btu_to_kwh = reward_params['btu_to_kwh']  # BTU to kWh conversion
         scale = reward_params['scale_factor']
         
-        # Extract observations using ROM config order: [WATRATRC(0-2), BHP(3-5), ENERGYRATE(6-8)]
-        # Water production (WATRATRC observations, indices 0-2, producers) - already in bbl/day
-        water_production_bbl_day = torch.sum(yobs[:, 0:num_prod], dim=1)
+        # Extract observations using CORRECT order: [BHP_inj(0-2), ENERGYRATE(3-5), WATRATRC(6-8)]
+        # BHP: indices 0 to num_inj (injectors)
+        # ENERGYRATE: indices num_inj to num_inj+num_prod (producers)
+        # WATRATRC: indices num_inj+num_prod to num_inj+num_prod*2 (producers)
         
-        # Energy production (ENERGYRATE observations, indices 6-8, producers)
-        energy_production_btu_day = torch.sum(yobs[:, num_inj+num_prod:num_inj+num_prod*2], dim=1)
+        # Energy production (ENERGYRATE observations, indices 3-5, producers)
+        energy_production_btu_day = torch.sum(yobs[:, num_inj:num_inj+num_prod], dim=1)
         energy_production_kwh_day = energy_production_btu_day * btu_to_kwh
         
-        # Extract actions using ROM config order: [WATRATRC(0-2), BHP(3-5)]
-        # Water injection (WATRATRC control, indices 0-2, injectors) - already in bbl/day
-        water_injection_bbl_day = torch.sum(action[:, 0:num_inj], dim=1)
+        # Water PRODUCTION (WATRATRC observations, indices 6-8, producers) - already in bbl/day
+        water_production_bbl_day = torch.sum(yobs[:, num_inj+num_prod:num_inj+num_prod*2], dim=1)
+        
+        # Extract actions using CORRECT order: [BHP(0-2), WATRATRC(3-5)]
+        # Water injection (WATRATRC control, indices 3-5, injectors) - already in bbl/day
+        water_injection_bbl_day = torch.sum(action[:, num_prod:num_prod+num_inj], dim=1)
         
         # Calculate geothermal reward:
-        # Reward = (Energy_production_kWh * $0.11/kWh) + (Water_production_bbl * $5/bbl) - (Water_injection_bbl * $10/bbl)
-        reward = (energy_production_revenue * energy_production_kwh_day + 
-                  water_production_reward * water_production_bbl_day - 
+        # Reward = (Energy_production_kWh * $0.11/kWh) - (Water_production_bbl * $5/bbl) - (Water_injection_bbl * $10/bbl)
+        # Note: Water production is a COST (disposal/handling), not a reward
+        reward = (energy_production_revenue * energy_production_kwh_day - 
+                  water_production_cost * water_production_bbl_day - 
                   water_injection_cost * water_injection_bbl_day) / scale
         
         return reward

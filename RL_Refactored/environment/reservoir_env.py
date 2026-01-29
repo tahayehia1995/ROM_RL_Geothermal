@@ -106,41 +106,44 @@ class ReservoirEnvironment(object):
         🎮 CORE FUNCTION: Map agent's [0,1] actions to ROM structure
         
         Policy outputs: [Producer_BHP(0-2), Injector_Rate(3-5)]
-        ROM expects: [WATRATRC(0-2), BHP(3-5)]
+        ROM expects (ACTUAL from H5): [BHP(0-2), WATRATRC(3-5)]
         
-        Geothermal control order (from ROM config): [WATRATRC(0-2), BHP(3-5)]
-        - WATRATRC: Water Injection Rate (injectors) - indices [0,1,2]
-        - BHP: Bottom-Hole Pressure (producers) - indices [3,4,5]
+        ACTUAL control order (from processed H5 tensor):
+        - BHP: indices [0,1,2] - Producer Bottom-Hole Pressure (wells 3,4,5)
+        - WATRATRC: indices [3,4,5] - Water Injection Rate (wells 0,1,2, injectors)
         
         Args:
             action_01: Agent's actions in [0,1] range (Policy order: [BHP, Rate])
             
         Returns:
-            actions_for_rom: Actions in ROM order with training normalization
+            actions_for_rom: Actions in ACTUAL H5 order with training normalization
         """
-        # Step 0: Reorder actions from policy order [BHP(0-2), Rate(3-5)] to ROM order [WATRATRC(0-2), BHP(3-5)]
-        # Policy: [BHP(0-2), Rate(3-5)] → ROM: [Rate(0-2), BHP(3-5)]
-        action_reordered = torch.cat([
-            action_01[:, self.num_prod:self.num_prod+self.num_inj],  # Injector Rate → WATRATRC positions
-            action_01[:, 0:self.num_prod]  # Producer BHP → BHP positions
-        ], dim=1)
+        # Policy outputs [BHP(0-2), Rate(3-5)] which matches ACTUAL H5 order [BHP(0-2), WATRATRC(3-5)]
+        # No reordering needed!
+        action_reordered = action_01.clone()
         
         # Step 1: Convert agent [0,1] to restricted physical ranges
         actions_restricted = action_reordered.clone()
         
         # Map actions using config-based control variable definitions
-        # Note: Control structure is defined in ROM config.yaml data.controls.variables
-        if hasattr(self, 'control_indices_map') and self.control_indices_map:
+        # Check if control_indices_map exists AND has non-empty indices
+        use_config_mapping = (
+            hasattr(self, 'control_indices_map') and 
+            self.control_indices_map and
+            any(len(indices) > 0 for indices in self.control_indices_map.values())
+        )
+        
+        if use_config_mapping:
             # Use config-based mapping
             for var_name, indices in self.control_indices_map.items():
-                if var_name == 'WATRATRC' and 'water_injection' in self.restricted_action_ranges:
+                if var_name == 'WATRATRC' and 'water_injection' in self.restricted_action_ranges and indices:
                     # Water injection controls (injectors)
                     water_min = self.restricted_action_ranges['water_injection']['min']
                     water_max = self.restricted_action_ranges['water_injection']['max']
                     for idx in indices:
                         if idx < actions_restricted.shape[1]:
                             actions_restricted[:, idx] = action_01[:, idx] * (water_max - water_min) + water_min
-                elif var_name == 'BHP' and 'producer_bhp' in self.restricted_action_ranges:
+                elif var_name == 'BHP' and 'producer_bhp' in self.restricted_action_ranges and indices:
                     # Producer BHP controls
                     bhp_min = self.restricted_action_ranges['producer_bhp']['min']
                     bhp_max = self.restricted_action_ranges['producer_bhp']['max']
@@ -148,23 +151,23 @@ class ReservoirEnvironment(object):
                         if idx < actions_restricted.shape[1]:
                             actions_restricted[:, idx] = action_01[:, idx] * (bhp_max - bhp_min) + bhp_min
         else:
-            # Fallback to hard-coded structure if config not available
-            # Geothermal order: Water Injection (first 3), Producer BHP (last 3)
-            water_min = self.restricted_action_ranges['water_injection']['min']
-            water_max = self.restricted_action_ranges['water_injection']['max']
-            actions_restricted[:, 0:self.num_inj] = action_01[:, 0:self.num_inj] * (water_max - water_min) + water_min
-            
+            # Fallback to hard-coded structure matching ACTUAL H5 tensor order
+            # ACTUAL order: Producer BHP (first 3), Water Injection (last 3)
             bhp_min = self.restricted_action_ranges['producer_bhp']['min']
             bhp_max = self.restricted_action_ranges['producer_bhp']['max']
-            actions_restricted[:, self.num_inj:self.num_inj+self.num_prod] = action_01[:, self.num_inj:self.num_inj+self.num_prod] * (bhp_max - bhp_min) + bhp_min
+            actions_restricted[:, 0:self.num_prod] = action_01[:, 0:self.num_prod] * (bhp_max - bhp_min) + bhp_min
+            
+            water_min = self.restricted_action_ranges['water_injection']['min']
+            water_max = self.restricted_action_ranges['water_injection']['max']
+            actions_restricted[:, self.num_prod:self.num_prod+self.num_inj] = action_01[:, self.num_prod:self.num_prod+self.num_inj] * (water_max - water_min) + water_min
         
         # Step 2: Normalize using TRAINING-ONLY parameters for ROM compatibility
         actions_for_rom = actions_restricted.clone()
         
         # Normalize using config-based control variable mapping
-        if hasattr(self, 'control_indices_map') and self.control_indices_map:
+        if use_config_mapping:
             for var_name, indices in self.control_indices_map.items():
-                if var_name in self.norm_params:
+                if var_name in self.norm_params and indices:
                     norm_params = self.norm_params[var_name]
                     full_min = float(norm_params['min']) if isinstance(norm_params['min'], str) else norm_params['min']
                     full_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
@@ -172,28 +175,32 @@ class ReservoirEnvironment(object):
                         if idx < actions_for_rom.shape[1]:
                             actions_for_rom[:, idx] = (actions_restricted[:, idx] - full_min) / (full_max - full_min)
         else:
-            # Fallback to hard-coded normalization
-            # Geothermal order: Water Injection (first 3), Producer BHP (last 3)
-            if 'WATRATRC' in self.norm_params:
-                water_params = self.norm_params['WATRATRC']
-                full_water_min = float(water_params['min'])
-                full_water_max = float(water_params['max'])
-                actions_for_rom[:, 0:self.num_inj] = (actions_restricted[:, 0:self.num_inj] - full_water_min) / (full_water_max - full_water_min)
-            
+            # Fallback to hard-coded normalization matching ACTUAL H5 tensor order
+            # ACTUAL order: Producer BHP (first 3), Water Injection (last 3)
             if 'BHP' in self.norm_params:
                 bhp_params = self.norm_params['BHP']
                 full_bhp_min = float(bhp_params['min'])
                 full_bhp_max = float(bhp_params['max'])
-                actions_for_rom[:, self.num_inj:self.num_inj+self.num_prod] = (actions_restricted[:, self.num_inj:self.num_inj+self.num_prod] - full_bhp_min) / (full_bhp_max - full_bhp_min)
+                actions_for_rom[:, 0:self.num_prod] = (actions_restricted[:, 0:self.num_prod] - full_bhp_min) / (full_bhp_max - full_bhp_min)
+            
+            if 'WATRATRC' in self.norm_params:
+                water_params = self.norm_params['WATRATRC']
+                full_water_min = float(water_params['min'])
+                full_water_max = float(water_params['max'])
+                actions_for_rom[:, self.num_prod:self.num_prod+self.num_inj] = (actions_restricted[:, self.num_prod:self.num_prod+self.num_inj] - full_water_min) / (full_water_max - full_water_min)
         
         return actions_for_rom
 
     def _map_dashboard_action_to_rom_input(self, action_01):
         """
-        🎯 NEW: Map dashboard-constrained actions to ROM input
+        🎯 Map dashboard-constrained actions to ROM input
         
         Policy outputs: [Producer_BHP(0-2), Injector_Rate(3-5)]
-        ROM expects: [WATRATRC(0-2), BHP(3-5)]
+        ROM expects (ACTUAL from H5): [BHP(0-2), WATRATRC(3-5)]
+        
+        ACTUAL control order (from processed H5 tensor):
+        - BHP: indices [0,1,2] - Producer Bottom-Hole Pressure
+        - WATRATRC: indices [3,4,5] - Water Injection Rate (injectors)
         
         Policy now outputs [0,1] where [0,1] corresponds to dashboard ranges directly.
         We need to convert to physical units using dashboard ranges, then normalize for ROM.
@@ -204,51 +211,55 @@ class ReservoirEnvironment(object):
         Returns:
             actions_for_rom: Actions normalized for ROM using global training parameters
         """
-        # Step 0: Reorder actions from policy order [BHP(0-2), Rate(3-5)] to ROM order [WATRATRC(0-2), BHP(3-5)]
-        # Policy: [BHP(0-2), Rate(3-5)] → ROM: [Rate(0-2), BHP(3-5)]
-        action_reordered = torch.cat([
-            action_01[:, self.num_prod:self.num_prod+self.num_inj],  # Injector Rate → WATRATRC positions
-            action_01[:, 0:self.num_prod]  # Producer BHP → BHP positions
-        ], dim=1)
+        # Policy outputs [BHP(0-2), Rate(3-5)] which matches ACTUAL H5 order [BHP(0-2), WATRATRC(3-5)]
+        # No reordering needed!
+        action_reordered = action_01.clone()
         
         # Step 1: Convert [0,1] to dashboard physical ranges
         actions_physical = action_reordered.clone()
         
         # Map actions using config-based control variable definitions
         # Note: Control structure is defined in ROM config.yaml data.controls.variables
-        if hasattr(self, 'control_indices_map') and self.control_indices_map:
+        # Check if control_indices_map exists AND has non-empty indices
+        use_config_mapping = (
+            hasattr(self, 'control_indices_map') and 
+            self.control_indices_map and
+            any(len(indices) > 0 for indices in self.control_indices_map.values())
+        )
+        
+        if use_config_mapping:
             # Use config-based mapping
             for var_name, indices in self.control_indices_map.items():
-                if var_name == 'WATRATRC' and 'water_injection' in self.restricted_action_ranges:
+                if var_name == 'WATRATRC' and 'water_injection' in self.restricted_action_ranges and indices:
                     water_min = self.restricted_action_ranges['water_injection']['min']
                     water_max = self.restricted_action_ranges['water_injection']['max']
                     for idx in indices:
                         if idx < actions_physical.shape[1]:
                             actions_physical[:, idx] = action_reordered[:, idx] * (water_max - water_min) + water_min
-                elif var_name == 'BHP' and 'producer_bhp' in self.restricted_action_ranges:
+                elif var_name == 'BHP' and 'producer_bhp' in self.restricted_action_ranges and indices:
                     bhp_min = self.restricted_action_ranges['producer_bhp']['min']
                     bhp_max = self.restricted_action_ranges['producer_bhp']['max']
                     for idx in indices:
                         if idx < actions_physical.shape[1]:
                             actions_physical[:, idx] = action_reordered[:, idx] * (bhp_max - bhp_min) + bhp_min
         else:
-            # Fallback to hard-coded structure if config not available
-            # Geothermal order: Water Injection (first 3), Producer BHP (last 3)
-            water_min = self.restricted_action_ranges['water_injection']['min']
-            water_max = self.restricted_action_ranges['water_injection']['max']
-            actions_physical[:, 0:self.num_inj] = action_reordered[:, 0:self.num_inj] * (water_max - water_min) + water_min
-            
+            # Fallback to hard-coded structure matching ACTUAL H5 tensor order
+            # ACTUAL order: Producer BHP (first 3), Water Injection (last 3)
             bhp_min = self.restricted_action_ranges['producer_bhp']['min']
             bhp_max = self.restricted_action_ranges['producer_bhp']['max']
-            actions_physical[:, self.num_inj:self.num_inj+self.num_prod] = action_reordered[:, self.num_inj:self.num_inj+self.num_prod] * (bhp_max - bhp_min) + bhp_min
+            actions_physical[:, 0:self.num_prod] = action_reordered[:, 0:self.num_prod] * (bhp_max - bhp_min) + bhp_min
+            
+            water_min = self.restricted_action_ranges['water_injection']['min']
+            water_max = self.restricted_action_ranges['water_injection']['max']
+            actions_physical[:, self.num_prod:self.num_prod+self.num_inj] = action_reordered[:, self.num_prod:self.num_prod+self.num_inj] * (water_max - water_min) + water_min
         
         # Step 2: Normalize using GLOBAL training parameters for ROM compatibility
         actions_for_rom = actions_physical.clone()
         
         # Normalize using config-based control variable mapping
-        if hasattr(self, 'control_indices_map') and self.control_indices_map:
+        if use_config_mapping:
             for var_name, indices in self.control_indices_map.items():
-                if var_name in self.norm_params:
+                if var_name in self.norm_params and indices:
                     norm_params = self.norm_params[var_name]
                     full_min = float(norm_params['min']) if isinstance(norm_params['min'], str) else norm_params['min']
                     full_max = float(norm_params['max']) if isinstance(norm_params['max'], str) else norm_params['max']
@@ -256,81 +267,86 @@ class ReservoirEnvironment(object):
                         if idx < actions_for_rom.shape[1]:
                             actions_for_rom[:, idx] = (actions_physical[:, idx] - full_min) / (full_max - full_min)
         else:
-            # Fallback to hard-coded normalization
-            # Geothermal order: Water Injection (first 3), Producer BHP (last 3)
-            if 'WATRATRC' in self.norm_params:
-                water_params = self.norm_params['WATRATRC']
-                full_water_min = float(water_params['min'])
-                full_water_max = float(water_params['max'])
-                actions_for_rom[:, 0:self.num_inj] = (actions_physical[:, 0:self.num_inj] - full_water_min) / (full_water_max - full_water_min)
-            
+            # Fallback to hard-coded normalization matching ACTUAL H5 tensor order
+            # ACTUAL order: Producer BHP (first 3), Water Injection (last 3)
             if 'BHP' in self.norm_params:
                 bhp_params = self.norm_params['BHP']
                 full_bhp_min = float(bhp_params['min'])
                 full_bhp_max = float(bhp_params['max'])
-                actions_for_rom[:, self.num_inj:self.num_inj+self.num_prod] = (actions_physical[:, self.num_inj:self.num_inj+self.num_prod] - full_bhp_min) / (full_bhp_max - full_bhp_min)
+                actions_for_rom[:, 0:self.num_prod] = (actions_physical[:, 0:self.num_prod] - full_bhp_min) / (full_bhp_max - full_bhp_min)
+            
+            if 'WATRATRC' in self.norm_params:
+                water_params = self.norm_params['WATRATRC']
+                full_water_min = float(water_params['min'])
+                full_water_max = float(water_params['max'])
+                actions_for_rom[:, self.num_prod:self.num_prod+self.num_inj] = (actions_physical[:, self.num_prod:self.num_prod+self.num_inj] - full_water_min) / (full_water_max - full_water_min)
         
         # Debug info for first few steps
         if self.istep <= 3:
-            # Geothermal order: Water Injection (first 3), Producer BHP (last 3)
-            water_vals = actions_physical[0, 0:self.num_inj].detach().cpu().numpy()
-            bhp_vals = actions_physical[0, self.num_inj:self.num_inj+self.num_prod].detach().cpu().numpy()
-            water_str = ",".join([f"{val:.0f}" for val in water_vals])
+            # ACTUAL order: Producer BHP (first 3), Water Injection (last 3)
+            bhp_vals = actions_physical[0, 0:self.num_prod].detach().cpu().numpy()
+            water_vals = actions_physical[0, self.num_prod:self.num_prod+self.num_inj].detach().cpu().numpy()
             bhp_str = ",".join([f"{val:.1f}" for val in bhp_vals])
-            print(f"      📊 Dashboard → Physical: Water_Injection=[{water_str}] bbl/day")
+            water_str = ",".join([f"{val:.0f}" for val in water_vals])
             print(f"      📊 Dashboard → Physical: Producer_BHP=[{bhp_str}] psi")
+            print(f"      📊 Dashboard → Physical: Water_Injection=[{water_str}] bbl/day")
             print(f"      🔧 Physical → ROM: [{actions_for_rom.min().item():.3f}, {actions_for_rom.max().item():.3f}]")
         
         return actions_for_rom
 
     def _convert_dashboard_action_to_physical(self, action_01):
         """
-        🎯 NEW: Convert dashboard [0,1] actions to physical units for reward calculation
+        🎯 Convert dashboard [0,1] actions to physical units for reward calculation
         
         Policy outputs: [Producer_BHP(0-2), Injector_Rate(3-5)]
-        Reward function expects: [WATRATRC(0-2), BHP(3-5)] (ROM order)
+        Reward function expects (ACTUAL from H5): [BHP(0-2), WATRATRC(3-5)]
+        
+        ACTUAL control order (from processed H5 tensor):
+        - BHP: indices [0,1,2] - Producer Bottom-Hole Pressure
+        - WATRATRC: indices [3,4,5] - Water Injection Rate (injectors)
         
         Args:
             action_01: Agent's actions in [0,1] range (Policy order: [BHP, Rate])
             
         Returns:
-            actions_physical: Actions in physical units using dashboard ranges (ROM order: [WATRATRC, BHP])
+            actions_physical: Actions in physical units using dashboard ranges (ACTUAL H5 order: [BHP, WATRATRC])
         """
-        # Step 0: Reorder actions from policy order [BHP(0-2), Rate(3-5)] to ROM order [WATRATRC(0-2), BHP(3-5)]
-        # Policy: [BHP(0-2), Rate(3-5)] → ROM: [Rate(0-2), BHP(3-5)]
-        action_reordered = torch.cat([
-            action_01[:, self.num_prod:self.num_prod+self.num_inj],  # Injector Rate → WATRATRC positions
-            action_01[:, 0:self.num_prod]  # Producer BHP → BHP positions
-        ], dim=1)
-        
-        actions_physical = action_reordered.clone()
+        # Policy outputs [BHP(0-2), Rate(3-5)] which matches ACTUAL H5 order [BHP(0-2), WATRATRC(3-5)]
+        # No reordering needed!
+        actions_physical = action_01.clone()
         
         # Convert actions using config-based control variable definitions
-        # Note: Control structure is defined in ROM config.yaml data.controls.variables
-        if hasattr(self, 'control_indices_map') and self.control_indices_map:
+        # Check if control_indices_map exists AND has non-empty indices
+        use_config_mapping = (
+            hasattr(self, 'control_indices_map') and 
+            self.control_indices_map and
+            any(len(indices) > 0 for indices in self.control_indices_map.values())
+        )
+        
+        if use_config_mapping:
             for var_name, indices in self.control_indices_map.items():
-                if var_name == 'WATRATRC' and 'water_injection' in self.restricted_action_ranges:
+                if var_name == 'WATRATRC' and 'water_injection' in self.restricted_action_ranges and indices:
                     water_min = self.restricted_action_ranges['water_injection']['min']
                     water_max = self.restricted_action_ranges['water_injection']['max']
                     for idx in indices:
                         if idx < actions_physical.shape[1]:
-                            actions_physical[:, idx] = action_reordered[:, idx] * (water_max - water_min) + water_min
-                elif var_name == 'BHP' and 'producer_bhp' in self.restricted_action_ranges:
+                            actions_physical[:, idx] = action_01[:, idx] * (water_max - water_min) + water_min
+                elif var_name == 'BHP' and 'producer_bhp' in self.restricted_action_ranges and indices:
                     bhp_min = self.restricted_action_ranges['producer_bhp']['min']
                     bhp_max = self.restricted_action_ranges['producer_bhp']['max']
                     for idx in indices:
                         if idx < actions_physical.shape[1]:
-                            actions_physical[:, idx] = action_reordered[:, idx] * (bhp_max - bhp_min) + bhp_min
+                            actions_physical[:, idx] = action_01[:, idx] * (bhp_max - bhp_min) + bhp_min
         else:
-            # Fallback to hard-coded structure if config not available
-            # Geothermal order: Water Injection (first 3), Producer BHP (last 3)
-            water_min = self.restricted_action_ranges['water_injection']['min']
-            water_max = self.restricted_action_ranges['water_injection']['max']
-            actions_physical[:, 0:self.num_inj] = action_reordered[:, 0:self.num_inj] * (water_max - water_min) + water_min
-            
+            # Fallback to hard-coded structure matching ACTUAL H5 tensor order
+            # ACTUAL order: Producer BHP (first 3), Water Injection (last 3)
             bhp_min = self.restricted_action_ranges['producer_bhp']['min']
             bhp_max = self.restricted_action_ranges['producer_bhp']['max']
-            actions_physical[:, self.num_inj:self.num_inj+self.num_prod] = action_reordered[:, self.num_inj:self.num_inj+self.num_prod] * (bhp_max - bhp_min) + bhp_min
+            actions_physical[:, 0:self.num_prod] = action_01[:, 0:self.num_prod] * (bhp_max - bhp_min) + bhp_min
+            
+            water_min = self.restricted_action_ranges['water_injection']['min']
+            water_max = self.restricted_action_ranges['water_injection']['max']
+            actions_physical[:, self.num_prod:self.num_prod+self.num_inj] = action_01[:, self.num_prod:self.num_prod+self.num_inj] * (water_max - water_min) + water_min
         
         return actions_physical
 
@@ -474,7 +490,11 @@ class ReservoirEnvironment(object):
                 obs_config = rom_config.get('data', {}).get('observations', {})
                 if obs_config and 'variables' in obs_config:
                     obs_vars = obs_config['variables']
-                    obs_order = obs_config.get('order', ['BHP', 'ENERGYRATE', 'WATRATRC'])
+                    # ACTUAL order (verified from denormalized values): [BHP, WATRATRC, ENERGYRATE]
+                    # - BHP: indices [0,1,2] - Injector BHP (~2000-5000 psi)
+                    # - WATRATRC: indices [3,4,5] - Water Production (producers) (~10^4 bbl/day)
+                    # - ENERGYRATE: indices [6,7,8] - Energy Production (producers) (~10^12 BTU/day)
+                    obs_order = obs_config.get('order', ['BHP', 'WATRATRC', 'ENERGYRATE'])
                     
                     for var_name in obs_order:
                         if var_name in obs_vars:
@@ -484,39 +504,29 @@ class ReservoirEnvironment(object):
                             for idx in indices:
                                 self.obs_variable_map[idx] = var_name
                     
-                    print(f"✅ Loaded observation definitions from ROM config: {len(obs_order)} observation types")
+                    print(f"✅ Loaded observation definitions from ROM config: {obs_order}")
+                    print(f"   📊 obs_variable_map: {self.obs_variable_map}")
                 
                 # Load control definitions
                 control_config = rom_config.get('data', {}).get('controls', {})
                 if control_config and 'variables' in control_config:
                     control_vars = control_config['variables']
-                    control_order = control_config.get('order', ['BHP'])
+                    # CORRECT order (verified from H5 tensor): [BHP, WATRATRC]
+                    # - BHP: indices [0,1,2] - Producer BHP
+                    # - WATRATRC: indices [3,4,5] - Water Injection (injectors)
+                    control_order = control_config.get('order', ['BHP', 'WATRATRC'])
                     
-                    # Build control indices map (controls are typically BHP for all wells)
-                    control_idx = 0
+                    # Use indices from config (same approach as observations)
                     for var_name in control_order:
                         if var_name in control_vars:
                             var_config = control_vars[var_name]
-                            num_wells = var_config.get('num_wells', 0)
-                            well_type = var_config.get('well_type', '')
-                            
-                            # Determine indices based on well type and count
-                            if well_type == 'injectors':
-                                # Controls for injectors come first (if any)
-                                indices = list(range(control_idx, control_idx + num_wells))
-                            elif well_type == 'producers':
-                                # Controls for producers come after injectors
-                                indices = list(range(control_idx, control_idx + num_wells))
-                            else:
-                                indices = list(range(control_idx, control_idx + num_wells))
-                            
+                            indices = var_config.get('indices', [])
                             self.control_indices_map[var_name] = indices
                             for idx in indices:
                                 self.control_variable_map[idx] = var_name
-                            
-                            control_idx += num_wells
                     
-                    print(f"✅ Loaded control definitions from ROM config: {len(control_order)} control types")
+                    print(f"✅ Loaded control definitions from ROM config: {control_order}")
+                    print(f"   📊 control_indices_map: {self.control_indices_map}")
             else:
                 print(f"⚠️ ROM config file not found at {rom_config_full_path}, using defaults")
         except Exception as e:
@@ -564,38 +574,40 @@ class ReservoirEnvironment(object):
     
     def _denormalize_observations_rom(self, yobs_normalized):
         """
-        Denormalize observations using optimal ROM structure
+        Denormalize observations using ACTUAL tensor order from processed H5 file
         
-        Optimal observation order: [Injector_BHP(0-2), Gas_Production(3-5), Water_Production(6-8)]
-        This matches EXACTLY the structure proven optimal in corrected_model_test.py
+        CORRECT observation order:
+        - BHP: indices [0,1,2] - INJECTOR Bottom-Hole Pressure (wells 0,1,2)
+        - ENERGYRATE: indices [3,4,5] - Energy Production Rate (wells 3,4,5, producers)
+        - WATRATRC: indices [6,7,8] - Water PRODUCTION Rate (wells 3,4,5, producers)
         
         Args:
             yobs_normalized: Normalized observations from ROM
             
         Returns:
-            Physical observations using optimal structure and training normalization
+            Physical observations using ACTUAL tensor structure and training normalization
         """
         yobs_physical = yobs_normalized.clone()
         
-        # Geothermal observation order (from ROM config): [WATRATRC(0-2), BHP(3-5), ENERGYRATE(6-8)]
-        # - WATRATRC: Water Production Rate (producers) - indices [0,1,2]
-        # - BHP: Bottom-Hole Pressure (injectors) - indices [3,4,5]
-        # - ENERGYRATE: Energy Production Rate (producers) - indices [6,7,8]
+        # CORRECT observation order (verified from H5 tensor):
+        # - BHP: indices [0,1,2] - INJECTOR Bottom-Hole Pressure (psi) - from wells 0,1,2
+        # - ENERGYRATE: indices [3,4,5] - Energy Production Rate (BTU/day) - from producers
+        # - WATRATRC: indices [6,7,8] - Water PRODUCTION Rate (bbl/day) - from producers
         
-        # Denormalize Water Production (WATRATRC, first 3 observations, indices 0-2)
-        for obs_idx in range(self.num_prod):
+        # Denormalize Injector BHP (first 3 observations, indices 0-2)
+        for obs_idx in range(self.num_inj):
             yobs_physical[:, obs_idx] = self._denormalize_single_observation(
                 yobs_normalized[:, obs_idx], obs_idx
             )
         
-        # Denormalize Injector BHP (next 3 observations, indices 3-5)
-        for obs_idx in range(self.num_prod, self.num_prod + self.num_inj):
+        # Denormalize Energy Production (next 3 observations, indices 3-5)
+        for obs_idx in range(self.num_inj, self.num_inj + self.num_prod):
             yobs_physical[:, obs_idx] = self._denormalize_single_observation(
                 yobs_normalized[:, obs_idx], obs_idx
             )
         
-        # Denormalize Energy Production (ENERGYRATE, last 3 observations, indices 6-8)
-        for obs_idx in range(self.num_prod + self.num_inj, self.num_prod + self.num_inj + self.num_prod):
+        # Denormalize Water Production (last 3 observations, indices 6-8)
+        for obs_idx in range(self.num_inj + self.num_prod, self.num_inj + self.num_prod + self.num_prod):
             yobs_physical[:, obs_idx] = self._denormalize_single_observation(
                 yobs_normalized[:, obs_idx], obs_idx
             )
@@ -617,14 +629,15 @@ class ReservoirEnvironment(object):
         var_name = self.obs_variable_map.get(obs_idx, None)
         
         if var_name is None:
-            # Fallback to old hard-coded logic if mapping not available
-            # Note: Observation indices are defined in ROM config.yaml data.observations.variables
-            if obs_idx < 3:  # Default BHP observations
+            # Fallback to hard-coded logic matching ACTUAL H5 tensor order
+            # ACTUAL observation order (verified from denormalized values):
+            # [BHP_inj(0-2), WATRATRC(3-5), ENERGYRATE(6-8)]
+            if obs_idx < 3:  # Injector BHP observations (indices 0-2)
                 var_name = 'BHP'
-            elif obs_idx < 6:  # Default energy production observations
-                var_name = 'ENERGYRATE'
-            else:  # Default water production observations
+            elif obs_idx < 6:  # Water Production observations (indices 3-5)
                 var_name = 'WATRATRC'
+            else:  # Energy Production observations (indices 6-8)
+                var_name = 'ENERGYRATE'
         
         # Denormalize using variable name from config
         if var_name in self.norm_params:
@@ -657,15 +670,17 @@ class ReservoirEnvironment(object):
         if self.istep <= 3:
             # Show normalized actions for ROM input (all individual values)
             if action_restricted.shape[0] > 0:
-                # Action order (from ROM config): [WATRATRC(0-2), BHP(3-5)]
-                water_injection_norm = action_restricted[0, 0:self.num_inj].detach().cpu().numpy()  # Water Injection normalized
-                producer_bhp_norm = action_restricted[0, self.num_inj:self.num_inj+self.num_prod].detach().cpu().numpy()  # Producer BHP normalized
+                # CORRECT Action order (verified from H5 tensor): [BHP(0-2), WATRATRC(3-5)]
+                # - BHP: indices [0,1,2] - Producer Bottom-Hole Pressure
+                # - WATRATRC: indices [3,4,5] - Water Injection Rate (injectors)
+                producer_bhp_norm = action_restricted[0, 0:self.num_prod].detach().cpu().numpy()  # Producer BHP normalized
+                water_injection_norm = action_restricted[0, self.num_prod:self.num_prod+self.num_inj].detach().cpu().numpy()  # Water Injection normalized
                 
                 # Format and print normalized actions
-                water_norm_str = ", ".join([f"{val:.3f}" for val in water_injection_norm])
                 bhp_norm_str = ", ".join([f"{val:.3f}" for val in producer_bhp_norm])
+                water_norm_str = ", ".join([f"{val:.3f}" for val in water_injection_norm])
                 
-                print(f"   🔧 Step {self.istep}: Actions normalized for ROM input → Water_Injection=[{water_norm_str}], Producer_BHP=[{bhp_norm_str}]")
+                print(f"   🔧 Step {self.istep}: Actions normalized for ROM input → Producer_BHP=[{bhp_norm_str}], Water_Injection=[{water_norm_str}]")
             
         # Store original action for reward calculation (which needs physical units)
         action_for_reward = action.clone()
@@ -683,7 +698,8 @@ class ReservoirEnvironment(object):
                     self.current_spatial_state = self.rom.model.decoder(self.state)
                 
                 # Create dummy observation (training dashboard uses ground truth, we'll use zeros)
-                # Structure (from ROM config): [WATRATRC(3), BHP(3), ENERGYRATE(3)] = 9 observations
+                # CORRECT Observation structure (verified from H5 tensor):
+                # [BHP_inj(0-2), ENERGYRATE(3-5), WATRATRC_prod(6-8)] = 9 observations
                 dummy_obs = torch.zeros(self.current_spatial_state.shape[0], 9).to(self.device)
                 
                 # 🎓 EXACT TRAINING DASHBOARD INPUTS: (spatial_state, controls, observations, dt)
@@ -717,8 +733,9 @@ class ReservoirEnvironment(object):
             print(f"❌ ROM prediction failed: {e}")
             raise
 
-        # 📊 Apply ROM-based observation denormalization: [WATRATRC(3), BHP(3), ENERGYRATE(3)]
-        # 🎯 NO CONSTRAINTS - Show RAW ROM predictions to understand the actual output
+        # 📊 Apply ROM-based observation denormalization
+        # CORRECT observation order (verified from H5 tensor):
+        # [BHP_inj(0-2), ENERGYRATE(3-5), WATRATRC_prod(6-8)]
         
         # Always apply ROM normalization parameters - NO FALLBACKS
         # 📊 Show RAW ROM outputs without any modification
@@ -726,19 +743,23 @@ class ReservoirEnvironment(object):
         
         # Print normalized observations from ROM (before denormalization)
         if self.istep <= 3:
-            # Observation order (from ROM config): [WATRATRC(0-2), BHP(3-5), ENERGYRATE(6-8)]
+            # CORRECT observation order (verified from H5 tensor): [BHP_inj(0-2), ENERGYRATE(3-5), WATRATRC_prod(6-8)]
             if yobs_original.shape[0] > 0:
-                # Extract normalized observation values
-                water_production_norm = yobs_original[0, 0:self.num_prod].detach().cpu().numpy()  # Water Production normalized (WATRATRC)
-                injector_bhp_norm = yobs_original[0, self.num_prod:self.num_prod+self.num_inj].detach().cpu().numpy()  # Injector BHP normalized
-                energy_production_norm = yobs_original[0, self.num_prod+self.num_inj:self.num_prod+self.num_inj+self.num_prod].detach().cpu().numpy()  # Energy Production normalized (ENERGYRATE)
+                # Extract normalized observation values in ACTUAL H5 tensor order
+                # ACTUAL ORDER (verified from values):
+                # BHP: indices 0-2 (from INJECTORS)
+                # WATRATRC: indices 3-5 (Water Production from PRODUCERS) - values ~10^4
+                # ENERGYRATE: indices 6-8 (Energy Production from PRODUCERS) - values ~10^12
+                injector_bhp_norm = yobs_original[0, 0:self.num_inj].detach().cpu().numpy()  # Injector BHP normalized (indices 0-2)
+                water_production_norm = yobs_original[0, self.num_inj:self.num_inj+self.num_prod].detach().cpu().numpy()  # Water Production normalized (indices 3-5)
+                energy_production_norm = yobs_original[0, self.num_inj+self.num_prod:self.num_inj+self.num_prod+self.num_prod].detach().cpu().numpy()  # Energy Production normalized (indices 6-8)
                 
                 # Format and print normalized observations
-                water_norm_str = ", ".join([f"{val:.3f}" for val in water_production_norm])
                 bhp_norm_str = ", ".join([f"{val:.3f}" for val in injector_bhp_norm])
+                water_norm_str = ", ".join([f"{val:.3f}" for val in water_production_norm])
                 energy_norm_str = ", ".join([f"{val:.3f}" for val in energy_production_norm])
                 
-                print(f"   🔧 Step {self.istep}: Observations normalized from ROM output → Water_Production=[{water_norm_str}], Injector_BHP=[{bhp_norm_str}], Energy_Production=[{energy_norm_str}]")
+                print(f"   🔧 Step {self.istep}: Observations normalized from ROM output → Injector_BHP=[{bhp_norm_str}], Water_Production=[{water_norm_str}], Energy_Production=[{energy_norm_str}]")
         
         # Apply ROM-based denormalization directly
         yobs_denorm = self._denormalize_observations_rom(yobs_original)
@@ -753,19 +774,23 @@ class ReservoirEnvironment(object):
         
         # 📊 Print predicted observations in physical units (similar to actions)
         if self.istep <= 3:
-            # Observation order (from ROM config): [WATRATRC(0-2), BHP(3-5), ENERGYRATE(6-8)]
+            # ACTUAL observation order (verified from denormalized values):
+            # [BHP_inj(0-2), WATRATRC(3-5), ENERGYRATE(6-8)]
             if yobs.shape[0] > 0:
-                # Extract observation values
-                water_production = yobs[0, 0:self.num_prod].detach().cpu().numpy()  # Water Production (bbl/day) - WATRATRC
-                injector_bhp = yobs[0, self.num_prod:self.num_prod+self.num_inj].detach().cpu().numpy()  # Injector BHP (psi)
-                energy_production = yobs[0, self.num_prod+self.num_inj:self.num_prod+self.num_inj+self.num_prod].detach().cpu().numpy()  # Energy Production (BTU/Day) - ENERGYRATE
+                # Extract observation values in ACTUAL H5 tensor order
+                # BHP: indices 0-2 (from INJECTORS) - values ~2000-5000 psi
+                # WATRATRC: indices 3-5 (Water Production from PRODUCERS) - values ~10^4 bbl/day
+                # ENERGYRATE: indices 6-8 (Energy Production from PRODUCERS) - values ~10^12 BTU/day
+                injector_bhp = yobs[0, 0:self.num_inj].detach().cpu().numpy()  # Injector BHP (psi) - indices 0-2
+                water_production = yobs[0, self.num_inj:self.num_inj+self.num_prod].detach().cpu().numpy()  # Water Production (bbl/day) - indices 3-5
+                energy_production = yobs[0, self.num_inj+self.num_prod:self.num_inj+self.num_prod+self.num_prod].detach().cpu().numpy()  # Energy Production (BTU/Day) - indices 6-8
                 
                 # Format and print observations
-                water_str = ", ".join([f"{val:.0f}" for val in water_production])
                 bhp_str = ", ".join([f"{val:.1f}" for val in injector_bhp])
-                energy_str = ", ".join([f"{val:.0f}" for val in energy_production])
+                water_str = ", ".join([f"{val:.0f}" for val in water_production])
+                energy_str = ", ".join([f"{val:.2e}" for val in energy_production])  # Scientific notation for large values
                 
-                print(f"   📊 Step {self.istep}: Predicted observations → Water_Production=[{water_str}] bbl/day, Injector_BHP=[{bhp_str}] psi, Energy_Production=[{energy_str}] BTU/Day")
+                print(f"   📊 Step {self.istep}: Predicted observations → Injector_BHP=[{bhp_str}] psi, Water_Production=[{water_str}] bbl/day, Energy_Production=[{energy_str}] BTU/Day")
 
         # Calculate reward with physical actions (normalization parameters always available)
         try:
@@ -776,15 +801,17 @@ class ReservoirEnvironment(object):
             
             # Print physical actions and observations for first few steps
             if self.istep <= 3:
-                # Action order (from ROM config): [WATRATRC(0-2), BHP(3-5)]
-                water_injection = action_physical[0, 0:self.num_inj].detach().cpu().numpy()  # Water Injection (bbl/day) - WATRATRC
-                producer_bhp = action_physical[0, self.num_inj:self.num_inj+self.num_prod].detach().cpu().numpy()  # Producer BHP (psi)
+                # CORRECT Action order (verified from H5 tensor): [BHP(0-2), WATRATRC(3-5)]
+                # - BHP: indices [0,1,2] - Producer Bottom-Hole Pressure (psi)
+                # - WATRATRC: indices [3,4,5] - Water Injection Rate (bbl/day)
+                producer_bhp = action_physical[0, 0:self.num_prod].detach().cpu().numpy()  # Producer BHP (psi) - indices 0-2
+                water_injection = action_physical[0, self.num_prod:self.num_prod+self.num_inj].detach().cpu().numpy()  # Water Injection (bbl/day) - indices 3-5
                 
                 # Format and print actions
-                water_str = ", ".join([f"{val:.0f}" for val in water_injection])
                 bhp_str = ", ".join([f"{val:.1f}" for val in producer_bhp])
+                water_str = ", ".join([f"{val:.0f}" for val in water_injection])
                 
-                print(f"   🎯 Step {self.istep}: Policy actions → Water_Injection=[{water_str}] bbl/day, Producer_BHP=[{bhp_str}] psi")
+                print(f"   🎯 Step {self.istep}: Policy actions → Producer_BHP=[{bhp_str}] psi, Water_Injection=[{water_str}] bbl/day")
             
             # Use physical actions for reward calculation
             reward = reward_fun(yobs, action_physical, self.num_prod, self.num_inj, self.config)
@@ -868,11 +895,13 @@ class ReservoirEnvironment(object):
         return z00
     
     def sample_action(self):
-        # Generate random actions using geothermal control order
-        # Order (from ROM config): [WATRATRC(3), BHP(3)] - Water Injection first, then Producer BHP
-        action_water = torch.rand(1, self.num_inj).to(self.device)  # Water injection actions [0,1]
+        # Generate random actions using ACTUAL H5 control order
+        # ACTUAL Control order (from processed H5 tensor): [BHP(0-2), WATRATRC(3-5)]
+        # - BHP: indices [0,1,2] - Producer Bottom-Hole Pressure
+        # - WATRATRC: indices [3,4,5] - Water Injection Rate (injectors)
         action_bhp = torch.rand(1, self.num_prod).to(self.device)  # Producer BHP actions [0,1]
-        action = torch.cat((action_water, action_bhp), dim=1)  # Order: [WATRATRC(3), BHP(3)]
+        action_water = torch.rand(1, self.num_inj).to(self.device)  # Water injection actions [0,1]
+        action = torch.cat((action_bhp, action_water), dim=1)  # ACTUAL H5 order: [BHP(3), WATRATRC(3)]
         return action
 
     def update_action_ranges_from_dashboard(self, rl_config):

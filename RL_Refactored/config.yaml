@@ -163,13 +163,14 @@ rl_model:
       
     # Economic values ($/unit) - Geothermal Project
     prices:
-      energy_production_revenue: 0.11   # Revenue from energy production ($/kWh)
-      water_production_reward: 5.0      # Reward for water production ($/bbl)
-      water_injection_cost: 10.0        # Cost for water injection ($/bbl)
+      energy_production_revenue: 0.11   # Revenue from energy production ($/kWh) - POSITIVE
+      water_production_cost: 5.0        # Cost for water production disposal/handling ($/bbl) - NEGATIVE
+      water_injection_cost: 10.0        # Cost for water injection pumping/treatment ($/bbl) - NEGATIVE
       # Legacy parameters (kept for backward compatibility)
+      water_production_reward: 5.0      # Deprecated - use water_production_cost instead
       gas_injection_revenue: 40.0       # Revenue from gas injection ($/ton) - deprecated
       gas_injection_cost: 10.0          # Operating cost of gas injection ($/ton) - deprecated
-      water_production_penalty: 5.0     # Penalty for water production ($/barrel) - deprecated, use water_production_reward
+      water_production_penalty: 5.0     # Penalty for water production ($/barrel) - deprecated
       gas_production_penalty: 50.0      # Cost/penalty for produced gas ($/ton) - deprecated
       
     # Normalization

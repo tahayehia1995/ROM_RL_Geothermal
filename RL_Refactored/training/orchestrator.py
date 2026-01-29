@@ -552,7 +552,7 @@ class EnhancedTrainingOrchestrator:
                 print(f"⚠️ Error mapping observations using config: {e}, falling back to hard-coded")
         
         # Fallback to hard-coded logic if config not available
-        # Default observation order: [Injector_BHP(0-2), Energy_Production(3-5), Water_Production(6-8)]
+        # ROM observation order (from config.yaml): [BHP(0-2), WATRATRC(3-5), ENERGYRATE(6-8)]
         try:
             # Injector BHP (indices 0-2) - already in psi
             for i in range(min(3, len(obs_np))):
@@ -560,21 +560,19 @@ class EnhancedTrainingOrchestrator:
                 physical_value = obs_np[i]  # Already in psi
                 well_observations[f"{well_name}_BHP_psi"] = physical_value
             
-            # Energy Production (indices 3-5) - already in BTU/Day
+            # Water Production (WATRATRC, indices 3-5) - already in bbl/day
             for i in range(min(3, max(0, len(obs_np) - 3))):
                 well_name = f"P{i+1}"
                 if 3 + i < len(obs_np):
-                    physical_value = obs_np[3 + i]  # Already in BTU/Day
-                    well_observations[f"{well_name}_Gas_ft3day"] = physical_value
+                    physical_value = obs_np[3 + i]  # Already in bbl/day
+                    well_observations[f"{well_name}_Water_bblday"] = physical_value
             
-            # Water Production (indices 6-8) - already in bbl/day
+            # Energy Production (ENERGYRATE, indices 6-8) - already in BTU/Day
             for i in range(min(3, max(0, len(obs_np) - 6))):
                 well_name = f"P{i+1}"
                 if 6 + i < len(obs_np):
-                    physical_value = obs_np[6 + i]  # Already in bbl/day
-                    well_observations[f"{well_name}_Water_ft3day"] = physical_value
-                    # Convert to barrels for economic calculations
-                    well_observations[f"{well_name}_Water_bblday"] = physical_value / 5.614583
+                    physical_value = obs_np[6 + i]  # Already in BTU/Day
+                    well_observations[f"{well_name}_Energy_BTUday"] = physical_value
             
             return well_observations
             

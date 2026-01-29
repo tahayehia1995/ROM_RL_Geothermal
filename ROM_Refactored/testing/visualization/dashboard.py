@@ -309,7 +309,8 @@ class InteractiveVisualizationDashboard:
                 
                 if obs_config and 'variables' in obs_config:
                     obs_vars = obs_config['variables']
-                    obs_order = obs_config.get('order', ['BHP', 'ENERGYRATE', 'WATRATRC'])
+                    # Default order matches ROM config.yaml: [BHP, WATRATRC, ENERGYRATE]
+                    obs_order = obs_config.get('order', ['BHP', 'WATRATRC', 'ENERGYRATE'])
                     
                     # Build observation names and units from config
                     obs_names_list = []

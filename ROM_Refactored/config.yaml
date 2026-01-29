@@ -88,11 +88,11 @@ data:
         - 2
         well_type: injectors
         num_wells: 3
-        well_names: &id002
-        - Inj4
-        - Inj5
-        - Inj6
-        group_name: BHP (All Injectors)
+        well_names: &id001
+        - I1
+        - I2
+        - I4
+        group_name: Injector BHP (Observations)
       WATRATRC:
         name: WATRATRC
         display_name: Water Production Rate
@@ -105,10 +105,10 @@ data:
         - 5
         well_type: producers
         num_wells: 3
-        well_names: &id001
-        - Prod1
-        - Prod2
-        - Prod3
+        well_names: &id002
+        - P1
+        - P2
+        - P3
         group_name: Water Production (All Producers)
       ENERGYRATE:
         name: ENERGYRATE
@@ -134,15 +134,6 @@ data:
     num_observations: 9
   controls:
     variables:
-      WATRATRC:
-        name: WATRATRC
-        display_name: Water Production Rate
-        unit: kg/s
-        unit_display: bbl/day
-        unit_conversion: 0.00838641
-        well_type: producers
-        num_wells: 3
-        well_names: *id001
       BHP:
         name: BHP
         display_name: Bottom-Hole Pressure
@@ -151,10 +142,19 @@ data:
         unit_conversion: 6894.76
         well_type: injectors
         num_wells: 3
+        well_names: *id001
+      WATRATRC:
+        name: WATRATRC
+        display_name: Water Production Rate
+        unit: kg/s
+        unit_display: bbl/day
+        unit_conversion: 0.00838641
+        well_type: producers
+        num_wells: 3
         well_names: *id002
     order:
-    - WATRATRC
     - BHP
+    - WATRATRC
     num_controls: 6
 encoder:
   conv_layers:

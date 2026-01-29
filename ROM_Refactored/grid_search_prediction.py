@@ -66,7 +66,8 @@ def load_timeseries_groups_map():
         
         if obs_config and 'variables' in obs_config:
             obs_vars = obs_config['variables']
-            obs_order = obs_config.get('order', ['BHP', 'ENERGYRATE', 'WATRATRC'])
+            # Default order matches ROM config.yaml: [BHP, WATRATRC, ENERGYRATE]
+            obs_order = obs_config.get('order', ['BHP', 'WATRATRC', 'ENERGYRATE'])
             groups_map = {}
             
             for var_name in obs_order:

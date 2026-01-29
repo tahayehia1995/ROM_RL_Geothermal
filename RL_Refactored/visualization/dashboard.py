@@ -111,7 +111,12 @@ class ScientificVisualization:
         print(f"   🗺️ Spatial data: {'Available' if self.spatial_data_available else 'Not available'}")
     
     def _identify_wells(self):
-        """Identify available wells from episode data by analyzing action structure"""
+        """Identify available wells from episode data by analyzing action structure
+        
+        ACTUAL Control Order (verified from H5 tensor):
+        - BHP: indices [0,1,2] - Producer Bottom-Hole Pressure (psi)
+        - WATRATRC: indices [3,4,5] - Water Injection Rate for INJECTORS (bbl/day)
+        """
         wells = {}
         
         if not self.data or not self.data.get('actions'):
@@ -123,24 +128,37 @@ class ScientificVisualization:
         if isinstance(first_action, dict):
             # Use config-based variable names if available, otherwise fallback to hard-coded patterns
             for key in first_action.keys():
-                # Check for BHP (could be producer or injector based on config)
+                well_name = key.split('_')[0]
+                
+                # Check for BHP control (Producer BHP)
                 if '_BHP_' in key or key.endswith('_BHP_psi'):
-                    well_name = key.split('_')[0]
                     # Determine well type from config or fallback logic
                     if well_name.startswith('P'):
-                        wells[well_name] = {'type': 'Producer', 'actions': ['BHP'], 'observations': ['Water', 'Gas']}
+                        wells[well_name] = {'type': 'Producer', 'actions': ['BHP'], 'observations': ['Water', 'Energy']}
                     elif well_name.startswith('I'):
-                        wells[well_name] = {'type': 'Injector', 'actions': ['BHP'], 'observations': ['BHP']}
-                # Check for Energy/Gas injection (typically injectors)
-                elif '_Gas_' in key or '_Energy_' in key or 'ft3day' in key:
-                    well_name = key.split('_')[0]
-                    if well_name not in wells:  # Don't overwrite if already added
-                        if well_name.startswith('I'):
-                            wells[well_name] = {'type': 'Injector', 'actions': ['Gas'], 'observations': ['BHP']}
-                        elif well_name.startswith('P'):
-                            # Producer energy production (observation)
-                            if well_name not in wells:
-                                wells[well_name] = {'type': 'Producer', 'actions': ['BHP'], 'observations': ['Water', 'Gas']}
+                        # Injector BHP might be observation, not control
+                        if well_name not in wells:
+                            wells[well_name] = {'type': 'Injector', 'actions': ['Water'], 'observations': ['BHP']}
+                
+                # Check for Water Injection control (Injector Water Injection)
+                elif '_Water_bblday' in key or '_Water_' in key:
+                    if well_name.startswith('I'):
+                        # This is injector water injection control
+                        wells[well_name] = {'type': 'Injector', 'actions': ['Water'], 'observations': ['BHP']}
+                    elif well_name.startswith('P'):
+                        # This is producer water production (observation)
+                        if well_name not in wells:
+                            wells[well_name] = {'type': 'Producer', 'actions': ['BHP'], 'observations': ['Water', 'Energy']}
+                
+                # Check for Energy/Gas (could be injection or production)
+                elif '_Gas_' in key or '_Energy_' in key or 'ft3day' in key or 'BTUday' in key:
+                    if well_name.startswith('I'):
+                        if well_name not in wells:
+                            wells[well_name] = {'type': 'Injector', 'actions': ['Water'], 'observations': ['BHP']}
+                    elif well_name.startswith('P'):
+                        # Producer energy production (observation)
+                        if well_name not in wells:
+                            wells[well_name] = {'type': 'Producer', 'actions': ['BHP'], 'observations': ['Water', 'Energy']}
         
         return wells
     
@@ -196,7 +214,8 @@ class ScientificVisualization:
                 control_config = rom_config.get('data', {}).get('controls', {})
                 if control_config and 'variables' in control_config:
                     control_vars = control_config['variables']
-                    control_order = control_config.get('order', ['BHP'])
+                    # Default order matches ROM config.yaml: [WATRATRC, BHP]
+                    control_order = control_config.get('order', ['WATRATRC', 'BHP'])
                     
                     control_idx = 0
                     for var_name in control_order:
@@ -835,7 +854,12 @@ class ScientificVisualization:
         self._print_well_summary(well_name, well_info)
     
     def _plot_well_actions(self, ax, well_name, well_info, time_values, time_label):
-        """Plot well actions over time - data is already in physical units from RL training"""
+        """Plot well actions over time - data is already in physical units from RL training
+        
+        ACTUAL Control Order (verified from H5 tensor):
+        - BHP: indices [0,1,2] - Producer Bottom-Hole Pressure (psi)
+        - WATRATRC: indices [3,4,5] - Water Injection Rate for INJECTORS (bbl/day)
+        """
         
         # Get actions - data is already in physical units (no denormalization needed)
         physical_actions = self._get_denormalized_actions()
@@ -846,15 +870,15 @@ class ScientificVisualization:
         if hasattr(self, 'control_units_map') and self.control_units_map:
             # Try to find control variable for this well type
             if well_info['type'] == 'Producer':
-                # Producers typically use BHP control
+                # Producers use BHP control (indices 0-2)
                 for var_name in ['BHP']:
                     if var_name in self.control_units_map:
                         control_var_name = var_name
                         control_unit = self.control_units_map[var_name]
                         break
             else:  # Injector
-                # Injectors might use ENERGYRATE or BHP based on config
-                for var_name in ['ENERGYRATE', 'BHP']:
+                # Injectors use WATRATRC (Water Injection Rate) control (indices 3-5)
+                for var_name in ['WATRATRC']:
                     if var_name in self.control_units_map:
                         control_var_name = var_name
                         control_unit = self.control_units_map[var_name]
@@ -866,22 +890,33 @@ class ScientificVisualization:
                 control_var_name = 'BHP'
                 control_unit = 'psi'
             else:  # Injector
-                control_var_name = 'ENERGYRATE'
-                control_unit = 'BTU/Day'
+                control_var_name = 'WATRATRC'
+                control_unit = 'bbl/day'
         
         # Build action key based on variable name and unit
+        # Keys match the format used in training/orchestrator.py
         if control_var_name == 'BHP':
             action_key = f"{well_name}_BHP_psi"
             values = [action.get(action_key, 0) for action in physical_actions]
             label = 'BHP Control'
             ylabel = f'BHP ({control_unit})'
             title_suffix = 'BHP Control Profile'
+            color = 'blue'
+        elif control_var_name == 'WATRATRC':
+            # Injector water injection is stored as {well_name}_Water_bblday
+            action_key = f"{well_name}_Water_bblday"
+            values = [action.get(action_key, 0) for action in physical_actions]
+            label = 'Water Injection'
+            ylabel = f'Water Injection ({control_unit})'
+            title_suffix = 'Water Injection Profile'
+            color = 'green'
         elif control_var_name == 'ENERGYRATE':
             action_key = f"{well_name}_Gas_ft3day"  # Legacy key format
             values = [action.get(action_key, 0) for action in physical_actions]
             label = 'Energy Injection'
             ylabel = f'Energy Injection ({control_unit})'
             title_suffix = 'Energy Injection Profile'
+            color = 'orange'
         else:
             # Generic fallback
             action_key = f"{well_name}_{control_var_name}"
@@ -889,18 +924,19 @@ class ScientificVisualization:
             label = f'{control_var_name} Control'
             ylabel = f'{control_var_name} ({control_unit})'
             title_suffix = f'{control_var_name} Control Profile'
+            color = 'purple'
         
         if any(val > 0 for val in values):
-            ax.plot(time_values, values, 'b-' if control_var_name == 'BHP' else 'g-', 
+            ax.plot(time_values, values, f'{color[0]}-', 
                    marker='s' if control_var_name == 'BHP' else 'o', markersize=4,
-                   label=label, linewidth=2)
-            ax.set_ylabel(ylabel, fontsize=14, color='blue' if control_var_name == 'BHP' else 'green')
-            ax.tick_params(axis='y', labelcolor='blue' if control_var_name == 'BHP' else 'green')
+                   label=label, linewidth=2, color=color)
+            ax.set_ylabel(ylabel, fontsize=14, color=color)
+            ax.tick_params(axis='y', labelcolor=color)
             
             # Add reasonable range shading
             val_min = min(values) * 0.95 if values else 0
-            val_max = max(values) * 1.05 if values else (1000 if control_var_name == 'BHP' else 10000000)
-            ax.axhspan(val_min, val_max, alpha=0.1, color='blue' if control_var_name == 'BHP' else 'green', 
+            val_max = max(values) * 1.05 if values else (5000 if control_var_name == 'BHP' else 100000)
+            ax.axhspan(val_min, val_max, alpha=0.1, color=color, 
                       label=f'{label} Range')
             ax.set_title(f'{well_name} - {title_suffix} (Physical Units)', fontsize=16, fontweight='bold')
         else:
@@ -926,16 +962,17 @@ class ScientificVisualization:
         if hasattr(self, 'obs_units_map') and self.obs_units_map:
             # Use config-based observation variables
             if well_info['type'] == 'Producer':
-                # Producers typically observe ENERGYRATE and WATRATRC
-                for var_name in ['ENERGYRATE', 'WATRATRC']:
+                # Producers observe WATRATRC (indices 3-5) then ENERGYRATE (indices 6-8)
+                # ACTUAL order: [WATRATRC, ENERGYRATE]
+                for var_name in ['WATRATRC', 'ENERGYRATE']:
                     if var_name in self.obs_units_map:
                         obs_vars.append(var_name)
                         obs_units.append(self.obs_units_map[var_name])
                         # Build key based on variable name and well name
                         if var_name == 'WATRATRC':
-                            obs_keys.append(f"{well_name}_Water_bblday")  # Legacy format
+                            obs_keys.append(f"{well_name}_Water_bblday")  # Water production (bbl/day)
                         elif var_name == 'ENERGYRATE':
-                            obs_keys.append(f"{well_name}_Gas_ft3day")  # Legacy format
+                            obs_keys.append(f"{well_name}_Gas_ft3day")  # Energy production (BTU/day)
             else:  # Injector
                 # Injectors typically observe BHP
                 if 'BHP' in self.obs_units_map:
@@ -1056,18 +1093,19 @@ class ScientificVisualization:
                 print(f"Energy Production: Min={min(energy_values):.1f}, Max={max(energy_values):.1f}, Mean={np.mean(energy_values):.1f} {energy_unit}")
         
         else:  # Injector
-            energy_key = f"{well_name}_Gas_ft3day"
+            # Injector water injection control (WATRATRC)
+            water_inj_key = f"{well_name}_Water_bblday"
             bhp_key = f"{well_name}_BHP_psi"
             
-            energy_values = [action.get(energy_key, 0) for action in physical_actions]
+            water_inj_values = [action.get(water_inj_key, 0) for action in physical_actions]
             bhp_values = [obs.get(bhp_key, 0) for obs in physical_observations]
             
-            energy_unit = self.control_units_map.get('ENERGYRATE', 'BTU/Day') if hasattr(self, 'control_units_map') else 'BTU/Day'
+            water_unit = self.control_units_map.get('WATRATRC', 'bbl/day') if hasattr(self, 'control_units_map') else 'bbl/day'
             bhp_unit = obs_units.get('BHP', 'psi')
             
-            if energy_values:
-                print(f"Energy Injection: Min={min(energy_values):.1f}, Max={max(energy_values):.1f}, Mean={np.mean(energy_values):.1f} {energy_unit}")
-            if bhp_values:
+            if any(v > 0 for v in water_inj_values):
+                print(f"Water Injection: Min={min(water_inj_values):.1f}, Max={max(water_inj_values):.1f}, Mean={np.mean(water_inj_values):.1f} {water_unit}")
+            if any(v > 0 for v in bhp_values):
                 print(f"BHP Observation: Min={min(bhp_values):.1f}, Max={max(bhp_values):.1f}, Mean={np.mean(bhp_values):.1f} {bhp_unit}")
         
         print("=" * 60)
@@ -1461,7 +1499,12 @@ class ScientificVisualization:
         return content_container
     
     def _get_rl_training_channel_info(self):
-        """Get actual channel names and units used during RL training"""
+        """Get actual channel names and units used during RL training
+        
+        DYNAMICALLY loads ALL channels from normalization parameters JSON file,
+        rather than using a hardcoded list. This supports any spatial channels
+        defined in the ROM training data (e.g., PRES, TEMP, PERMI, VPOROSGEO, SW, SG, etc.)
+        """
         try:
             # Try to load the actual channel information from normalization files
             import glob
@@ -1483,21 +1526,50 @@ class ScientificVisualization:
                 field_units = []
                 training_channels = []
                 
-                # Standard order: SW, SG, PRES
-                channel_order = ['SW', 'SG', 'PRES']
+                # DYNAMIC: Use order from JSON file if available
+                # Priority: 1) selection_summary.training_channels, 2) selection_summary.spatial_channels, 3) keys
+                selection_summary = norm_params.get('selection_summary', {})
+                channel_order = (
+                    selection_summary.get('training_channels') or 
+                    selection_summary.get('spatial_channels') or 
+                    norm_params.get('channel_order') or
+                    sorted(spatial_channels.keys())  # Fallback: alphabetical order
+                )
+                
+                # Default display names and units for common geothermal reservoir channels
+                channel_defaults = {
+                    'PRES': {'display_name': 'Pressure', 'unit': 'psi'},
+                    'TEMP': {'display_name': 'Temperature', 'unit': 'K'},
+                    'PERMI': {'display_name': 'Permeability', 'unit': 'm²'},
+                    'VPOROSGEO': {'display_name': 'Porosity', 'unit': 'fraction'},
+                    'SW': {'display_name': 'Water Saturation', 'unit': 'fraction'},
+                    'SG': {'display_name': 'Gas Saturation', 'unit': 'fraction'},
+                    'SO': {'display_name': 'Oil Saturation', 'unit': 'fraction'},
+                }
+                
+                # Build channel info from ACTUAL channels in the normalization file
                 for ch_name in channel_order:
                     if ch_name in spatial_channels:
-                        field_names.append(spatial_channels[ch_name].get('display_name', ch_name))
-                        field_units.append(spatial_channels[ch_name].get('unit', ''))
+                        ch_info = spatial_channels[ch_name]
+                        # Use display_name if available, then defaults, then channel key
+                        defaults = channel_defaults.get(ch_name, {'display_name': ch_name, 'unit': ''})
+                        display_name = ch_info.get('display_name', defaults['display_name'])
+                        unit = ch_info.get('unit', defaults['unit'])
+                        field_names.append(display_name)
+                        field_units.append(unit)
                         training_channels.append(ch_name)
                 
-                return field_names, field_units, training_channels
-            else:
-                # Fallback to defaults
-                return ['Water Saturation', 'Gas Saturation', 'Pressure'], ['fraction', 'fraction', 'psi'], ['SW', 'SG', 'PRES']
+                if training_channels:
+                    print(f"📊 Loaded {len(training_channels)} spatial channels: {training_channels}")
+                    return field_names, field_units, training_channels
+                else:
+                    print("⚠️ No spatial channels found in normalization file, using fallback")
+            
+            # Fallback to defaults only if nothing found
+            return ['Pressure'], ['psi'], ['PRES']
         except Exception as e:
             print(f"⚠️ Warning: Could not load channel info: {e}")
-            return ['Water Saturation', 'Gas Saturation', 'Pressure'], ['fraction', 'fraction', 'psi'], ['SW', 'SG', 'PRES']
+            return ['Pressure'], ['psi'], ['PRES']
     
     def _calculate_data_color_range(self, spatial_data, timestep, layer, channel):
         """Calculate optimal color range based on actual data values"""
