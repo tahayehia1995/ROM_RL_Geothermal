@@ -140,18 +140,28 @@ data:
         unit: Pa
         unit_display: psi
         unit_conversion: 6894.76
-        well_type: injectors
-        num_wells: 3
-        well_names: *id001
-      WATRATRC:
-        name: WATRATRC
-        display_name: Water Production Rate
-        unit: kg/s
-        unit_display: bbl/day
-        unit_conversion: 0.00838641
         well_type: producers
         num_wells: 3
         well_names: *id002
+        indices:
+        - 0
+        - 1
+        - 2
+        group_name: Producer BHP (Controls)
+      WATRATRC:
+        name: WATRATRC
+        display_name: Water Injection Rate
+        unit: kg/s
+        unit_display: bbl/day
+        unit_conversion: 0.00838641
+        well_type: injectors
+        num_wells: 3
+        well_names: *id001
+        indices:
+        - 3
+        - 4
+        - 5
+        group_name: Water Injection (Controls)
     order:
     - BHP
     - WATRATRC
