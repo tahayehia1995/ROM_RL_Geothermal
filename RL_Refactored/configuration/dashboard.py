@@ -1284,98 +1284,80 @@ def auto_detect_action_ranges_from_h5(data_dir=None, rom_config_path=None):
         # Note: ENERGYRATE is an OBSERVATION for producers, NOT a control for injectors
         # The injector control is WATRATRC (water rate), which was detected above
                     
-        # Check for BHP control ranges
-        # PRIORITY 1: Use min_range/max_range from config if specified (user-defined control range)
-        # PRIORITY 2: Detect from H5 file
-        bhp_range_from_config = False
-        if 'BHP' in control_definitions:
-            bhp_config = control_definitions['BHP']
-            if 'min_range' in bhp_config and 'max_range' in bhp_config:
-                bhp_min = float(bhp_config['min_range'])
-                bhp_max = float(bhp_config['max_range'])
-                bhp_range_from_config = True
-                
-                detected_ranges['bhp_min'] = bhp_min
-                detected_ranges['bhp_max'] = bhp_max
-                detected_ranges['detection_details']['bhp'] = {
-                    'min': bhp_min,
-                    'max': bhp_max,
-                    'source': 'ROM config.yaml (min_range/max_range)',
-                    'well_type': bhp_config.get('well_type', 'producers'),
-                    'well_names': bhp_config.get('well_names', [])
-                }
-                
-                print(f"✅ PRODUCER BHP RANGES FROM CONFIG:")
-                print(f"   📋 Using user-defined control range from ROM config.yaml")
-                print(f"   📈 Range: [{bhp_min:.2f}, {bhp_max:.2f}] psi")
-                print(f"   🎯 For {bhp_config.get('well_type', 'producers')} wells")
-        
-        # If not specified in config, try to detect from H5 file
-        if not bhp_range_from_config:
-            bhp_file = os.path.join(data_dir, 'batch_timeseries_data_BHP.h5')
-            if os.path.exists(bhp_file):
-                with h5py.File(bhp_file, 'r') as f:
-                    if 'data' in f:
-                        bhp_data = np.array(f['data'])
-                        
-                        # Determine producer indices from ROM config
-                        producer_indices = None
-                        if 'BHP' in control_definitions:
-                            # BHP is a control variable - check if it's for producers or injectors
-                            var_config = control_definitions['BHP']
-                            if var_config['well_type'] == 'producers':
-                                # Producers use BHP as control
-                                # BHP is first in order, so producers are indices 0-2
-                                producer_indices = list(range(num_producers))
-                            elif var_config['well_type'] == 'injectors':
-                                # Injectors use BHP as control - producers might be in observations
-                                # For now, assume producers come after injectors
-                                producer_indices = list(range(num_injectors, num_injectors + num_producers))
-                        
-                        # Fallback logic if config doesn't specify
-                        if producer_indices is None:
-                            if bhp_data.shape[2] >= num_producers + num_injectors:
-                                # Assume producers come after injectors
-                                producer_indices = list(range(num_injectors, num_injectors + num_producers))
-                            elif bhp_data.shape[2] >= num_producers:
-                                # If only producers, use first N
-                                producer_indices = list(range(num_producers))
-                            else:
-                                # Last resort: use all available wells
-                                producer_indices = list(range(bhp_data.shape[2]))
-                        
-                        if producer_indices:
-                            producer_bhp = bhp_data[:, :, producer_indices]
-                            bhp_min = np.min(producer_bhp)
-                            bhp_max = np.max(producer_bhp)
+        # Check for BHP file (bottom hole pressure)
+        # Use ROM config to determine which wells are producers
+        bhp_file = os.path.join(data_dir, 'batch_timeseries_data_BHP.h5')
+        if os.path.exists(bhp_file):
+            with h5py.File(bhp_file, 'r') as f:
+                if 'data' in f:
+                    bhp_data = np.array(f['data'])
+                    
+                    # Determine producer indices from ROM config
+                    producer_indices = None
+                    if 'BHP' in control_definitions:
+                        # BHP is a control variable - check if it's for producers or injectors
+                        var_config = control_definitions['BHP']
+                        if var_config['well_type'] == 'producers':
+                            # Producers use BHP as control
+                            # Producers come after injectors in the control order
+                            # Need to determine starting index
+                            total_controls_before = 0
+                            if control_order:
+                                for var_name in control_order:
+                                    if var_name == 'BHP':
+                                        break
+                                    if var_name in control_definitions:
+                                        total_controls_before += control_definitions[var_name]['num_wells']
+                            producer_indices = list(range(total_controls_before, total_controls_before + num_producers))
+                        elif var_config['well_type'] == 'injectors':
+                            # Injectors use BHP as control - producers might be in observations
+                            # For now, assume producers come after injectors
+                            producer_indices = list(range(num_injectors, num_injectors + num_producers))
+                    
+                    # Fallback logic if config doesn't specify
+                    if producer_indices is None:
+                        if bhp_data.shape[2] >= num_producers + num_injectors:
+                            # Assume producers come after injectors
+                            producer_indices = list(range(num_injectors, num_injectors + num_producers))
+                        elif bhp_data.shape[2] >= num_producers:
+                            # If only producers, use first N
+                            producer_indices = list(range(num_producers))
                         else:
-                            # Fallback to all data if shape unexpected
-                            bhp_min = np.min(bhp_data)
-                            bhp_max = np.max(bhp_data)
-                        
-                        detected_ranges['bhp_min'] = float(bhp_min)
-                        detected_ranges['bhp_max'] = float(bhp_max)
-                        detected_ranges['detection_details']['bhp'] = {
-                            'shape': bhp_data.shape,
-                            'producer_indices': producer_indices if producer_indices else 'all',
-                            'producer_shape': producer_bhp.shape if 'producer_bhp' in locals() else bhp_data.shape,
-                            'num_producers': num_producers,
-                            'min': float(bhp_min),
-                            'max': float(bhp_max),
-                            'source': f'batch_timeseries_data_BHP.h5 (wells {producer_indices if producer_indices else "all"})'
-                        }
-                        
-                        print(f"✅ PRODUCER BHP RANGES DETECTED FROM H5:")
-                        print(f"   📊 Data shape: {bhp_data.shape}")
-                        if 'producer_bhp' in locals():
-                            print(f"   📊 Producer data shape: {producer_bhp.shape}")
-                            print(f"   📊 Producer indices: {producer_indices if producer_indices else 'all'}")
-                        print(f"   📈 Range: [{bhp_min:.2f}, {bhp_max:.2f}] psi")
-                        if producer_indices:
-                            producer_names_str = ', '.join(well_names_map.get('producers', [f'P{i+1}' for i in range(len(producer_indices))]))
-                            print(f"   🎯 Will be used for producer wells: {producer_indices} ({producer_names_str})")
-                        else:
-                            print(f"   🎯 Will be used as Producer BHP defaults")
+                            # Last resort: use all available wells
+                            producer_indices = list(range(bhp_data.shape[2]))
+                    
+                    if producer_indices:
+                        producer_bhp = bhp_data[:, :, producer_indices]
+                        bhp_min = np.min(producer_bhp)
+                        bhp_max = np.max(producer_bhp)
+                    else:
+                        # Fallback to all data if shape unexpected
+                        bhp_min = np.min(bhp_data)
+                        bhp_max = np.max(bhp_data)
+                    
+                    detected_ranges['bhp_min'] = float(bhp_min)
+                    detected_ranges['bhp_max'] = float(bhp_max)
+                    detected_ranges['detection_details']['bhp'] = {
+                        'shape': bhp_data.shape,
+                        'producer_indices': producer_indices if producer_indices else 'all',
+                        'producer_shape': producer_bhp.shape if 'producer_bhp' in locals() else bhp_data.shape,
+                        'num_producers': num_producers,
+                        'min': float(bhp_min),
+                        'max': float(bhp_max),
+                        'source': f'batch_timeseries_data_BHP.h5 (wells {producer_indices if producer_indices else "all"})'
+                    }
+                    
+                    print(f"✅ PRODUCER BHP RANGES DETECTED:")
+                    print(f"   📊 Data shape: {bhp_data.shape}")
+                    if 'producer_bhp' in locals():
+                        print(f"   📊 Producer data shape: {producer_bhp.shape}")
+                        print(f"   📊 Producer indices: {producer_indices if producer_indices else 'all'}")
+                    print(f"   📈 Range: [{bhp_min:.2f}, {bhp_max:.2f}] psi")
+                    if producer_indices:
+                        producer_names_str = ', '.join(well_names_map.get('producers', [f'P{i+1}' for i in range(len(producer_indices))]))
+                        print(f"   🎯 Will be used for producer wells: {producer_indices} ({producer_names_str})")
+                    else:
+                        print(f"   🎯 Will be used as Producer BHP defaults")
                         
         # Store control definitions and well counts in detection details
         detected_ranges['detection_details']['control_definitions'] = control_definitions
@@ -2640,9 +2622,35 @@ class RLConfigurationDashboard:
             obs_order = detection_details.get('observation_order', [])
         
         
-        # IMPORTANT: For "Select Control Variables" section, ONLY show control variables
-        # NOT observation variables - they should be in a separate section
-        # The ROM config defines exactly which variables are controls vs observations
+        # Combine all variables from both controls and observations for display
+        # This allows user to select any variable as control or observation
+        # IMPORTANT: For variables that exist in both, we need to preserve both versions
+        # because controls and observations can have different indices/well_names
+        all_vars = {}
+        # First add observations (they have more complete info like group_name)
+        all_vars.update(obs_vars)
+        # Then add/update with controls (to get control-specific indices and well_names)
+        # But preserve observation fields that don't exist in controls
+        for var_name, var_config in control_vars.items():
+            if var_name in all_vars:
+                # Merge: use control config but preserve observation-specific fields
+                merged_config = all_vars[var_name].copy()
+                merged_config.update(var_config)
+                # For controls display, prioritize control indices and well_names
+                merged_config['control_indices'] = var_config.get('indices', [])
+                merged_config['control_well_names'] = var_config.get('well_names', [])
+                # Keep observation indices/well_names for observation display
+                merged_config['observation_indices'] = all_vars[var_name].get('indices', [])
+                merged_config['observation_well_names'] = all_vars[var_name].get('well_names', [])
+                all_vars[var_name] = merged_config
+            else:
+                all_vars[var_name] = var_config.copy()
+        
+        # Create combined order (controls first, then observations not in controls)
+        combined_order = list(control_order)
+        for var_name in obs_order:
+            if var_name not in combined_order:
+                combined_order.append(var_name)
         
         # Initialize selections if not already done
         if not hasattr(self, 'control_selections') or not self.control_selections:
@@ -2650,50 +2658,47 @@ class RLConfigurationDashboard:
             self.observation_selections = {}
             self.variable_range_widgets = {}
         
-        # Controls Selection Section - ONLY show control_vars (not obs_vars)
+        # Controls Selection Section
         action_widgets.append(widgets.HTML("<hr style='margin: 20px 0;'>"))
         action_widgets.append(widgets.HTML("<h4>🎮 Select Control Variables</h4>"))
-        action_widgets.append(widgets.HTML("<p><i>Select which variables will be used as controls (actions) for the RL agent. <b>Only control variables from ROM config are shown:</b></i></p>"))
+        action_widgets.append(widgets.HTML("<p><i>Select which variables will be used as controls (actions) for the RL agent. Variables are shown from ROM config:</i></p>"))
         
-        # Show ONLY control variables (not observations)
-        if not control_vars:
-            action_widgets.append(widgets.HTML("<p style='color: #ff9800;'><i>⚠️ No control variables found in ROM config. Please ensure ROM_Refactored/config.yaml has controls defined.</i></p>"))
+        # Show all variables (from both controls and observations) so user can select what they want
+        # But default selection based on ROM config controls
+        if not all_vars:
+            action_widgets.append(widgets.HTML("<p style='color: #ff9800;'><i>⚠️ No variables found in ROM config. Please ensure ROM_Refactored/config.yaml has controls/observations defined.</i></p>"))
         else:
-            # Show control variables grouped by well type for clarity
-            # Group controls by their well_type
-            producer_control_vars = []
-            injector_control_vars = []
-            other_control_vars = []
+            # Show variables grouped by well type for clarity
+            # First show variables for producers, then injectors
+            producer_vars = []
+            injector_vars = []
+            other_vars = []
             
-            for var_name in control_order:
-                if var_name not in control_vars:
+            for var_name in combined_order:
+                if var_name not in all_vars:
                     continue
-                var_config = control_vars[var_name]
+                var_config = all_vars[var_name]
                 well_type = var_config.get('well_type', 'unknown')
                 if well_type == 'producers':
-                    producer_control_vars.append(var_name)
+                    producer_vars.append(var_name)
                 elif well_type == 'injectors':
-                    injector_control_vars.append(var_name)
+                    injector_vars.append(var_name)
                 else:
-                    other_control_vars.append(var_name)
+                    other_vars.append(var_name)
             
-            # Rename for consistency with existing code below
-            producer_vars = producer_control_vars
-            injector_vars = injector_control_vars
-            other_vars = other_control_vars
-            
-            # Show producer control variables first (e.g., BHP for producers)
+            # Show producer variables first
             if producer_vars:
-                action_widgets.append(widgets.HTML("<p style='font-weight: bold; margin-top: 10px; color: #1976d2;'>📊 Producer Controls:</p>"))
+                action_widgets.append(widgets.HTML("<p style='font-weight: bold; margin-top: 10px; color: #1976d2;'>📊 Producer Variables:</p>"))
                 for var_name in producer_vars:
-                    if var_name not in control_vars:
+                    if var_name not in all_vars:
                         continue
                     
-                    var_config = control_vars[var_name]
+                    var_config = all_vars[var_name]
                     display_name = var_config.get('display_name', var_name)
                     well_type = var_config.get('well_type', 'unknown')
                     
-                    # Use control definition directly - this is the source of truth
+                    # For controls display, ALWAYS use control-specific well_names and indices
+                    # If variable exists in controls, use control definition directly
                     if var_name in control_vars:
                         # Use control definition for controls display - this is the source of truth
                         control_var_config = control_vars[var_name]
@@ -2807,18 +2812,19 @@ class RLConfigurationDashboard:
                     if checkbox.value:
                         action_widgets.append(range_container)
             
-            # Show injector control variables (e.g., WATRATRC for water injection)
+            # Show injector variables
             if injector_vars:
-                action_widgets.append(widgets.HTML("<p style='font-weight: bold; margin-top: 15px; color: #d32f2f;'>💧 Injector Controls:</p>"))
+                action_widgets.append(widgets.HTML("<p style='font-weight: bold; margin-top: 15px; color: #d32f2f;'>💧 Injector Variables:</p>"))
                 for var_name in injector_vars:
-                    if var_name not in control_vars:
+                    if var_name not in all_vars:
                         continue
                     
-                    var_config = control_vars[var_name]
+                    var_config = all_vars[var_name]
                     display_name = var_config.get('display_name', var_name)
                     well_type = var_config.get('well_type', 'unknown')
                     
-                    # Use control definition directly - this is the source of truth
+                    # For controls display, ALWAYS use control-specific well_names and indices
+                    # If variable exists in controls, use control definition directly
                     if var_name in control_vars:
                         # Use control definition for controls display - this is the source of truth
                         control_var_config = control_vars[var_name]

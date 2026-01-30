@@ -148,8 +148,6 @@ data:
         - 1
         - 2
         group_name: Producer BHP (Controls)
-        min_range: 1500.0
-        max_range: 2000.0
       WATRATRC:
         name: WATRATRC
         display_name: Water Injection Rate
