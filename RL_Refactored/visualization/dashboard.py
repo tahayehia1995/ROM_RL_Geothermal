@@ -1131,12 +1131,13 @@ class ScientificVisualization:
             return
         
         # Get pre-project parameters from config
+        # Default: 5 years × $20M/year = $100M total capital cost
         try:
             years_before = self.config.rl_model.get('economics', {}).get('years_before_project_start', 5)
-            cost_per_year = self.config.rl_model.get('economics', {}).get('capital_cost_per_year', 100000000.0)  # $100M
+            cost_per_year = self.config.rl_model.get('economics', {}).get('capital_cost_per_year', 20000000.0)  # $20M
         except:
             years_before = 5
-            cost_per_year = 100000000.0
+            cost_per_year = 20000000.0  # $20M per year (total $100M over 5 years)
         
         total_capital_cost = years_before * cost_per_year
         
@@ -2244,8 +2245,9 @@ class ScientificVisualization:
                 return
             
             # PRE-PROJECT PARAMETERS: Get from existing infrastructure
+            # Default: $20M/year (total $100M over 5 years)
             years_before = self.data.get('years_before_project', 5) if self.data else 5
-            cost_per_year = self.data.get('capital_cost_per_year', 100000000.0) if self.data else 100000000.0
+            cost_per_year = self.data.get('capital_cost_per_year', 20000000.0) if self.data else 20000000.0
             scale_factor = self.config.rl_model['economics']['scale_factor']
             
             # CREATE COMPLETE PROJECT TIMELINE
@@ -2352,8 +2354,9 @@ class ScientificVisualization:
                 return
             
             # PRE-PROJECT PARAMETERS: Get from existing infrastructure
+            # Default: $20M/year (total $100M over 5 years)
             years_before = self.data.get('years_before_project', 5) if self.data else 5
-            cost_per_year = self.data.get('capital_cost_per_year', 100000000.0) if self.data else 100000000.0
+            cost_per_year = self.data.get('capital_cost_per_year', 20000000.0) if self.data else 20000000.0
             scale_factor = self.config.rl_model['economics']['scale_factor']
             
             # CREATE PRE-PROJECT CUMULATIVE DEBT
@@ -2758,8 +2761,9 @@ class ScientificVisualization:
                 return
             
             # Get pre-project and scale parameters
+            # Default: $20M/year (total $100M over 5 years)
             years_before = self.data.get('years_before_project', 5) if self.data else 5
-            cost_per_year = self.data.get('capital_cost_per_year', 100000000.0) if self.data else 100000000.0
+            cost_per_year = self.data.get('capital_cost_per_year', 20000000.0) if self.data else 20000000.0
             scale_factor = self.config.rl_model['economics']['scale_factor']
             
             # Create complete timeline (pre-project + operational)
@@ -2809,8 +2813,9 @@ class ScientificVisualization:
                 return
             
             # Get pre-project and scale parameters
+            # Default: $20M/year (total $100M over 5 years)
             years_before = self.data.get('years_before_project', 5) if self.data else 5
-            cost_per_year = self.data.get('capital_cost_per_year', 100000000.0) if self.data else 100000000.0
+            cost_per_year = self.data.get('capital_cost_per_year', 20000000.0) if self.data else 20000000.0
             scale_factor = self.config.rl_model['economics']['scale_factor']
             
             # Create pre-project cumulative debt

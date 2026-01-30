@@ -3617,7 +3617,11 @@ class RLConfigurationDashboard:
         self.action_variation_tab.children = variation_content
     
     def _apply_configuration(self, button):
-        """Apply configuration and pre-load ROM model + generate Z0"""
+        """Apply configuration and pre-load ROM model + generate Z0
+        
+        NOTE: This function applies RL configuration without modifying ROM_Refactored/config.yaml.
+        The ROM config is treated as READ-ONLY to preserve ROM model training integrity.
+        """
         with self.results_output:
             clear_output(wait=True)
             
@@ -3635,13 +3639,10 @@ class RLConfigurationDashboard:
                 # Store in a way that can be accessed from training script
                 self._store_config_for_training()
                 
-                # Update ROM config file with selected controls and observations
-                print("\n📝 Updating ROM config file with selected controls and observations...")
-                rom_config_updated = self._update_rom_config_file()
-                if rom_config_updated:
-                    print("   ✅ ROM config file updated successfully!")
-                else:
-                    print("   ⚠️ Could not update ROM config file (non-critical)")
+                # NOTE: We intentionally do NOT modify ROM_Refactored/config.yaml
+                # The ROM config is read-only from the RL dashboard perspective
+                print("\n📋 ROM config (ROM_Refactored/config.yaml) is READ-ONLY")
+                print("   ✅ RL reads variable definitions from ROM config without modifying it")
                 
                 # NEW: Load ROM model and generate Z0 immediately
                 print("\n🚀 Pre-loading ROM model and generating Z0...")
@@ -4155,7 +4156,12 @@ class RLConfigurationDashboard:
             print("✅ Reset completed! Please scan folders again.")
     
     def _save_configuration(self, button):
-        """Save current configuration to file"""
+        """Save current configuration to file
+        
+        NOTE: This function saves RL configuration to rl_config.json only.
+        It does NOT modify ROM_Refactored/config.yaml to preserve ROM model integrity.
+        The ROM config should only be modified through the data preprocessing dashboard.
+        """
         with self.results_output:
             clear_output(wait=True)
             
@@ -4172,13 +4178,11 @@ class RLConfigurationDashboard:
                         json.dump(json_config, f, indent=4)
                     print(f"💾 Configuration saved to {config_file}")
                     
-                    # Also update ROM config file
-                    print("\n📝 Updating ROM config file with selected controls and observations...")
-                    rom_config_updated = self._update_rom_config_file()
-                    if rom_config_updated:
-                        print("   ✅ ROM config file updated successfully!")
-                    else:
-                        print("   ⚠️ Could not update ROM config file (non-critical)")
+                    # NOTE: We intentionally do NOT update ROM_Refactored/config.yaml
+                    # The ROM config is read-only from the RL dashboard perspective
+                    # to preserve ROM model training integrity
+                    print("\n📋 ROM config (ROM_Refactored/config.yaml) is READ-ONLY from RL dashboard")
+                    print("   ✅ RL uses ROM config for variable definitions without modifying it")
                 except Exception as e:
                     print(f"❌ Error saving configuration: {e}")
             else:

@@ -773,45 +773,57 @@ class EnhancedTrainingOrchestrator:
             return None
     
     def _calculate_economic_breakdown(self, physical_obs, physical_actions):
-        """Calculate detailed economic breakdown for geothermal project"""
+        """Calculate detailed economic breakdown for geothermal project
+        
+        IMPORTANT: This must use the SAME parameters as the reward function for consistency.
+        Each RL timestep = 1 year, so daily rates × 365 = annual values.
+        
+        Calculation flow (matches reward.py):
+        1. Energy_electrical = Energy_thermal × thermal_to_electrical_efficiency (0.1)
+        2. Energy_kWh = Energy_electrical × btu_to_kwh (0.000293071)
+        3. Annual values = daily × days_per_year (365)
+        4. Revenue/Costs calculated with prices
+        """
         econ_config = self.config.rl_model['economics']
         
-        # Get conversion factors
+        # Get conversion factors - MUST match reward.py
         btu_to_kwh = econ_config['conversion'].get('btu_to_kwh', 0.000293071)
+        days_per_year = econ_config['conversion'].get('days_per_year', 365)
+        thermal_to_electrical_efficiency = econ_config['conversion'].get('thermal_to_electrical_efficiency', 0.1)
         
-        # Get prices
+        # Get prices - MUST match reward.py defaults
         prices = econ_config['prices']
-        energy_production_revenue = prices.get('energy_production_revenue', 0.11)  # $/kWh
-        water_production_reward = prices.get('water_production_reward', 5.0)  # $/bbl
+        energy_production_revenue = prices.get('energy_production_revenue', 0.0011)  # $/kWh (electrical)
+        water_production_cost = prices.get('water_production_cost', 5.0)  # $/bbl (disposal cost)
         water_injection_cost = prices.get('water_injection_cost', 10.0)  # $/bbl
         
         breakdown = {
             'energy_production_revenue': 0.0,  # Positive revenue from energy production
-            'water_production_reward': 0.0,   # Positive reward from water production
-            'water_injection_cost': 0.0,      # Negative cost for water injection
+            'water_production_cost': 0.0,      # Negative cost for water production disposal
+            'water_injection_cost': 0.0,       # Negative cost for water injection
             'net_step_cashflow': 0.0,
             'operational_cashflow': 0.0
         }
         
-        # Energy production revenue (BTU/day → kWh/day → $)
-        # Look for ENERGYRATE observations (stored as Gas_ft3day but actually BTU/day)
+        # Energy production revenue (BTU/day thermal → kWh/year electrical → $)
+        # Apply thermal_to_electrical_efficiency to match reward function
         for key, value in physical_obs.items():
             if ('Gas_ft3day' in key or 'Energy' in key) and ('P' in key or 'Prod' in key):  # Producer energy
-                # Value is in BTU/day, convert to kWh/day
-                energy_kwh_per_day = value * btu_to_kwh
-                # Convert daily rates to annual amounts (since each RL step = 1 year)
-                annual_revenue = energy_kwh_per_day * energy_production_revenue * 365
+                # Value is in BTU/day (thermal), apply efficiency then convert
+                energy_btu_electrical = value * thermal_to_electrical_efficiency
+                energy_kwh_per_day = energy_btu_electrical * btu_to_kwh
+                # Convert daily rates to annual amounts (each RL step = 1 year)
+                annual_revenue = energy_kwh_per_day * energy_production_revenue * days_per_year
                 breakdown['energy_production_revenue'] += annual_revenue
         
-        # Water production reward (bbl/day → $)
+        # Water production COST (bbl/day → $/year) - this is a COST, not reward
         for key, value in physical_obs.items():
             if 'Water_bblday' in key and ('P' in key or 'Prod' in key):  # Producer water
-                # Convert daily rates to annual amounts (since each RL step = 1 year)
-                annual_reward = value * water_production_reward * 365
-                breakdown['water_production_reward'] += annual_reward
+                # Convert daily rates to annual amounts (each RL step = 1 year)
+                annual_cost = value * water_production_cost * days_per_year
+                breakdown['water_production_cost'] += annual_cost
         
-        # Water injection cost (bbl/day → $)
-        # Look for WATRATRC control actions (water injection)
+        # Water injection cost (bbl/day → $/year)
         for key, value in physical_actions.items():
             if 'Water' in key and ('I' in key or 'Inj' in key):  # Injector water
                 # Value should be in bbl/day
@@ -824,14 +836,14 @@ class EnhancedTrainingOrchestrator:
                     # Assume bbl/day if unit not specified
                     water_bbl_per_day = value
                 
-                # Convert daily rates to annual amounts (since each RL step = 1 year)
-                annual_cost = water_bbl_per_day * water_injection_cost * 365
+                # Convert daily rates to annual amounts (each RL step = 1 year)
+                annual_cost = water_bbl_per_day * water_injection_cost * days_per_year
                 breakdown['water_injection_cost'] += annual_cost
         
         # Operational cashflow for this step (before any capital costs)
-        # Positive revenue/reward minus costs
-        breakdown['operational_cashflow'] = (breakdown['energy_production_revenue'] + 
-                                            breakdown['water_production_reward'] - 
+        # Revenue minus costs (water production is now a cost)
+        breakdown['operational_cashflow'] = (breakdown['energy_production_revenue'] - 
+                                            breakdown['water_production_cost'] - 
                                             breakdown['water_injection_cost'])
         
         # Net cashflow (same as operational for step-wise calculation)
