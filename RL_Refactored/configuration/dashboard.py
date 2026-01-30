@@ -1284,80 +1284,98 @@ def auto_detect_action_ranges_from_h5(data_dir=None, rom_config_path=None):
         # Note: ENERGYRATE is an OBSERVATION for producers, NOT a control for injectors
         # The injector control is WATRATRC (water rate), which was detected above
                     
-        # Check for BHP file (bottom hole pressure)
-        # Use ROM config to determine which wells are producers
-        bhp_file = os.path.join(data_dir, 'batch_timeseries_data_BHP.h5')
-        if os.path.exists(bhp_file):
-            with h5py.File(bhp_file, 'r') as f:
-                if 'data' in f:
-                    bhp_data = np.array(f['data'])
-                    
-                    # Determine producer indices from ROM config
-                    producer_indices = None
-                    if 'BHP' in control_definitions:
-                        # BHP is a control variable - check if it's for producers or injectors
-                        var_config = control_definitions['BHP']
-                        if var_config['well_type'] == 'producers':
-                            # Producers use BHP as control
-                            # Producers come after injectors in the control order
-                            # Need to determine starting index
-                            total_controls_before = 0
-                            if control_order:
-                                for var_name in control_order:
-                                    if var_name == 'BHP':
-                                        break
-                                    if var_name in control_definitions:
-                                        total_controls_before += control_definitions[var_name]['num_wells']
-                            producer_indices = list(range(total_controls_before, total_controls_before + num_producers))
-                        elif var_config['well_type'] == 'injectors':
-                            # Injectors use BHP as control - producers might be in observations
-                            # For now, assume producers come after injectors
-                            producer_indices = list(range(num_injectors, num_injectors + num_producers))
-                    
-                    # Fallback logic if config doesn't specify
-                    if producer_indices is None:
-                        if bhp_data.shape[2] >= num_producers + num_injectors:
-                            # Assume producers come after injectors
-                            producer_indices = list(range(num_injectors, num_injectors + num_producers))
-                        elif bhp_data.shape[2] >= num_producers:
-                            # If only producers, use first N
-                            producer_indices = list(range(num_producers))
+        # Check for BHP control ranges
+        # PRIORITY 1: Use min_range/max_range from config if specified (user-defined control range)
+        # PRIORITY 2: Detect from H5 file
+        bhp_range_from_config = False
+        if 'BHP' in control_definitions:
+            bhp_config = control_definitions['BHP']
+            if 'min_range' in bhp_config and 'max_range' in bhp_config:
+                bhp_min = float(bhp_config['min_range'])
+                bhp_max = float(bhp_config['max_range'])
+                bhp_range_from_config = True
+                
+                detected_ranges['bhp_min'] = bhp_min
+                detected_ranges['bhp_max'] = bhp_max
+                detected_ranges['detection_details']['bhp'] = {
+                    'min': bhp_min,
+                    'max': bhp_max,
+                    'source': 'ROM config.yaml (min_range/max_range)',
+                    'well_type': bhp_config.get('well_type', 'producers'),
+                    'well_names': bhp_config.get('well_names', [])
+                }
+                
+                print(f"✅ PRODUCER BHP RANGES FROM CONFIG:")
+                print(f"   📋 Using user-defined control range from ROM config.yaml")
+                print(f"   📈 Range: [{bhp_min:.2f}, {bhp_max:.2f}] psi")
+                print(f"   🎯 For {bhp_config.get('well_type', 'producers')} wells")
+        
+        # If not specified in config, try to detect from H5 file
+        if not bhp_range_from_config:
+            bhp_file = os.path.join(data_dir, 'batch_timeseries_data_BHP.h5')
+            if os.path.exists(bhp_file):
+                with h5py.File(bhp_file, 'r') as f:
+                    if 'data' in f:
+                        bhp_data = np.array(f['data'])
+                        
+                        # Determine producer indices from ROM config
+                        producer_indices = None
+                        if 'BHP' in control_definitions:
+                            # BHP is a control variable - check if it's for producers or injectors
+                            var_config = control_definitions['BHP']
+                            if var_config['well_type'] == 'producers':
+                                # Producers use BHP as control
+                                # BHP is first in order, so producers are indices 0-2
+                                producer_indices = list(range(num_producers))
+                            elif var_config['well_type'] == 'injectors':
+                                # Injectors use BHP as control - producers might be in observations
+                                # For now, assume producers come after injectors
+                                producer_indices = list(range(num_injectors, num_injectors + num_producers))
+                        
+                        # Fallback logic if config doesn't specify
+                        if producer_indices is None:
+                            if bhp_data.shape[2] >= num_producers + num_injectors:
+                                # Assume producers come after injectors
+                                producer_indices = list(range(num_injectors, num_injectors + num_producers))
+                            elif bhp_data.shape[2] >= num_producers:
+                                # If only producers, use first N
+                                producer_indices = list(range(num_producers))
+                            else:
+                                # Last resort: use all available wells
+                                producer_indices = list(range(bhp_data.shape[2]))
+                        
+                        if producer_indices:
+                            producer_bhp = bhp_data[:, :, producer_indices]
+                            bhp_min = np.min(producer_bhp)
+                            bhp_max = np.max(producer_bhp)
                         else:
-                            # Last resort: use all available wells
-                            producer_indices = list(range(bhp_data.shape[2]))
-                    
-                    if producer_indices:
-                        producer_bhp = bhp_data[:, :, producer_indices]
-                        bhp_min = np.min(producer_bhp)
-                        bhp_max = np.max(producer_bhp)
-                    else:
-                        # Fallback to all data if shape unexpected
-                        bhp_min = np.min(bhp_data)
-                        bhp_max = np.max(bhp_data)
-                    
-                    detected_ranges['bhp_min'] = float(bhp_min)
-                    detected_ranges['bhp_max'] = float(bhp_max)
-                    detected_ranges['detection_details']['bhp'] = {
-                        'shape': bhp_data.shape,
-                        'producer_indices': producer_indices if producer_indices else 'all',
-                        'producer_shape': producer_bhp.shape if 'producer_bhp' in locals() else bhp_data.shape,
-                        'num_producers': num_producers,
-                        'min': float(bhp_min),
-                        'max': float(bhp_max),
-                        'source': f'batch_timeseries_data_BHP.h5 (wells {producer_indices if producer_indices else "all"})'
-                    }
-                    
-                    print(f"✅ PRODUCER BHP RANGES DETECTED:")
-                    print(f"   📊 Data shape: {bhp_data.shape}")
-                    if 'producer_bhp' in locals():
-                        print(f"   📊 Producer data shape: {producer_bhp.shape}")
-                        print(f"   📊 Producer indices: {producer_indices if producer_indices else 'all'}")
-                    print(f"   📈 Range: [{bhp_min:.2f}, {bhp_max:.2f}] psi")
-                    if producer_indices:
-                        producer_names_str = ', '.join(well_names_map.get('producers', [f'P{i+1}' for i in range(len(producer_indices))]))
-                        print(f"   🎯 Will be used for producer wells: {producer_indices} ({producer_names_str})")
-                    else:
-                        print(f"   🎯 Will be used as Producer BHP defaults")
+                            # Fallback to all data if shape unexpected
+                            bhp_min = np.min(bhp_data)
+                            bhp_max = np.max(bhp_data)
+                        
+                        detected_ranges['bhp_min'] = float(bhp_min)
+                        detected_ranges['bhp_max'] = float(bhp_max)
+                        detected_ranges['detection_details']['bhp'] = {
+                            'shape': bhp_data.shape,
+                            'producer_indices': producer_indices if producer_indices else 'all',
+                            'producer_shape': producer_bhp.shape if 'producer_bhp' in locals() else bhp_data.shape,
+                            'num_producers': num_producers,
+                            'min': float(bhp_min),
+                            'max': float(bhp_max),
+                            'source': f'batch_timeseries_data_BHP.h5 (wells {producer_indices if producer_indices else "all"})'
+                        }
+                        
+                        print(f"✅ PRODUCER BHP RANGES DETECTED FROM H5:")
+                        print(f"   📊 Data shape: {bhp_data.shape}")
+                        if 'producer_bhp' in locals():
+                            print(f"   📊 Producer data shape: {producer_bhp.shape}")
+                            print(f"   📊 Producer indices: {producer_indices if producer_indices else 'all'}")
+                        print(f"   📈 Range: [{bhp_min:.2f}, {bhp_max:.2f}] psi")
+                        if producer_indices:
+                            producer_names_str = ', '.join(well_names_map.get('producers', [f'P{i+1}' for i in range(len(producer_indices))]))
+                            print(f"   🎯 Will be used for producer wells: {producer_indices} ({producer_names_str})")
+                        else:
+                            print(f"   🎯 Will be used as Producer BHP defaults")
                         
         # Store control definitions and well counts in detection details
         detected_ranges['detection_details']['control_definitions'] = control_definitions
@@ -1572,15 +1590,17 @@ class RLConfigurationDashboard:
         # Default economic parameters (current values from code)
         self.default_economics = {
             # Geothermal project parameters
-            'energy_production_revenue': 0.11,  # Revenue from energy production ($/kWh) - POSITIVE
-            'water_production_cost': 5.0,       # Cost for water production disposal ($/bbl) - NEGATIVE
-            'water_injection_cost': 10.0,       # Cost for water injection ($/bbl) - NEGATIVE
-            'btu_to_kwh': 0.000293071,          # BTU to kWh conversion factor
-            'scale_factor': 1000000.0,          # Final scaling factor for reward normalization
+            'energy_production_revenue': 0.0011,  # Revenue from energy production ($/kWh electrical) - POSITIVE
+            'water_production_cost': 5.0,         # Cost for water production disposal ($/bbl) - NEGATIVE
+            'water_injection_cost': 10.0,         # Cost for water injection ($/bbl) - NEGATIVE
+            'btu_to_kwh': 0.000293071,            # BTU to kWh conversion factor
+            'days_per_year': 365,                 # Days per year (each RL timestep = 1 year)
+            'thermal_to_electrical_efficiency': 0.1,  # Thermal BTU to electrical BTU efficiency (~10%)
+            'scale_factor': 1000000.0,            # Final scaling factor for reward normalization
             # Pre-project development parameters
-            'years_before_project_start': 5,    # Years of pre-project development
-            'capital_cost_per_year': 100000000.0,  # Capital cost per year during pre-project phase ($100M default)
-            'fixed_capital_cost': 500000000.0   # Calculated: years_before_project_start × capital_cost_per_year
+            'years_before_project_start': 5,      # Years of pre-project development
+            'capital_cost_per_year': 20000000.0,  # Capital cost per year during pre-project phase ($20M default)
+            'fixed_capital_cost': 100000000.0     # Total capital cost ($100M = 5 years × $20M/year)
         }
         
         # Default RL model hyperparameters
@@ -3084,14 +3104,6 @@ class RLConfigurationDashboard:
         # Economic parameter inputs
         self.economic_inputs = {}
         
-        params = [
-            ('energy_production_revenue', 'Energy Production Revenue ($/kWh)', self.default_economics['energy_production_revenue']),
-            ('water_production_cost', 'Water Production Disposal Cost ($/bbl)', self.default_economics['water_production_cost']),
-            ('water_injection_cost', 'Water Injection Cost ($/bbl)', self.default_economics['water_injection_cost']),
-            ('btu_to_kwh', 'BTU to kWh Conversion Factor', self.default_economics['btu_to_kwh']),
-            ('scale_factor', 'Scale Factor', self.default_economics['scale_factor'])
-        ]
-        
         # Add pre-project development parameters section
         economic_widgets.append(widgets.HTML("<hr><h4>🏗️ Pre-Project Development Phase</h4>"))
         
@@ -3134,24 +3146,89 @@ class RLConfigurationDashboard:
         self.years_before_input.observe(update_total_capital, names='value')
         self.capital_per_year_input.observe(update_total_capital, names='value')
         
+        # Add conversion factors section
+        economic_widgets.append(widgets.HTML("<hr><h4>🔄 Conversion Factors</h4>"))
+        
+        # Thermal to Electrical Efficiency
+        self.thermal_efficiency_input = widgets.FloatText(
+            value=self.default_economics['thermal_to_electrical_efficiency'],
+            description='Thermal→Electrical Efficiency:',
+            style={'description_width': '250px'},
+            layout=widgets.Layout(width='450px')
+        )
+        economic_widgets.append(self.thermal_efficiency_input)
+        economic_widgets.append(widgets.HTML(
+            "<p style='color: #666; margin-left: 20px; font-size: 0.9em;'>"
+            "Geothermal plant efficiency: thermal BTU × efficiency = electrical BTU (default: 0.1 = 10%)</p>"
+        ))
+        self.economic_inputs['thermal_to_electrical_efficiency'] = self.thermal_efficiency_input
+        
+        # Days per year
+        self.days_per_year_input = widgets.IntText(
+            value=self.default_economics['days_per_year'],
+            description='Days per Year:',
+            style={'description_width': '250px'},
+            layout=widgets.Layout(width='450px')
+        )
+        economic_widgets.append(self.days_per_year_input)
+        economic_widgets.append(widgets.HTML(
+            "<p style='color: #666; margin-left: 20px; font-size: 0.9em;'>"
+            "Each RL timestep = 1 year. Daily rates × 365 = annual values</p>"
+        ))
+        self.economic_inputs['days_per_year'] = self.days_per_year_input
+        
+        # BTU to kWh conversion
+        self.btu_to_kwh_input = widgets.FloatText(
+            value=self.default_economics['btu_to_kwh'],
+            description='BTU to kWh Factor:',
+            style={'description_width': '250px'},
+            layout=widgets.Layout(width='450px')
+        )
+        economic_widgets.append(self.btu_to_kwh_input)
+        self.economic_inputs['btu_to_kwh'] = self.btu_to_kwh_input
+        
         # Add operational parameters section
         economic_widgets.append(widgets.HTML("<hr><h4>💼 Operational Parameters</h4>"))
         
-        # Add operational parameters
-        operational_params = [
-            ('fixed_capital_cost', 'Fixed Capital Cost (calculated above)', self.default_economics['fixed_capital_cost'])
-        ]
+        # Energy production revenue
+        self.energy_revenue_input = widgets.FloatText(
+            value=self.default_economics['energy_production_revenue'],
+            description='Energy Revenue ($/kWh):',
+            style={'description_width': '250px'},
+            layout=widgets.Layout(width='450px')
+        )
+        economic_widgets.append(self.energy_revenue_input)
+        self.economic_inputs['energy_production_revenue'] = self.energy_revenue_input
         
-        for param_key, param_label, param_default in params:
-            input_widget = widgets.FloatText(
-                value=param_default,
-                description=param_label,
-                style={'description_width': '250px'},
-                layout=widgets.Layout(width='450px')
-            )
-            
-            economic_widgets.append(input_widget)
-            self.economic_inputs[param_key] = input_widget
+        # Water production cost
+        self.water_prod_cost_input = widgets.FloatText(
+            value=self.default_economics['water_production_cost'],
+            description='Water Prod. Cost ($/bbl):',
+            style={'description_width': '250px'},
+            layout=widgets.Layout(width='450px')
+        )
+        economic_widgets.append(self.water_prod_cost_input)
+        self.economic_inputs['water_production_cost'] = self.water_prod_cost_input
+        
+        # Water injection cost
+        self.water_inj_cost_input = widgets.FloatText(
+            value=self.default_economics['water_injection_cost'],
+            description='Water Inj. Cost ($/bbl):',
+            style={'description_width': '250px'},
+            layout=widgets.Layout(width='450px')
+        )
+        economic_widgets.append(self.water_inj_cost_input)
+        self.economic_inputs['water_injection_cost'] = self.water_inj_cost_input
+        
+        # Scale factor
+        self.scale_factor_input = widgets.FloatText(
+            value=self.default_economics['scale_factor'],
+            description='Scale Factor:',
+            style={'description_width': '250px'},
+            layout=widgets.Layout(width='450px')
+        )
+        economic_widgets.append(self.scale_factor_input)
+        self.economic_inputs['scale_factor'] = self.scale_factor_input
         
         # Add calculated capital cost as read-only display (not editable)
         self.economic_inputs['fixed_capital_cost'] = widgets.HTML(
@@ -3162,22 +3239,31 @@ class RLConfigurationDashboard:
         
         # Current reward function display
         economic_widgets.extend([
-            widgets.HTML("<hr><h4>Geothermal Reward Function</h4>"),
+            widgets.HTML("<hr><h4>📐 Geothermal Reward Function (Annual per Timestep)</h4>"),
             widgets.HTML("""
             <div style='background-color: #f0f8ff; padding: 10px; border-left: 4px solid #4CAF50;'>
             <pre>
-Reward = (energy_production_revenue * energy_production_kWh
-        - water_production_cost * water_production_bbl
-        - water_injection_cost * water_injection_bbl) / scale_factor
+<b>Step 1: Convert thermal energy to electrical energy</b>
+  Energy_electrical_BTU = Energy_thermal_BTU × thermal_to_electrical_efficiency
 
-Where:
-- energy_production_revenue: Revenue from energy production ($/kWh) - POSITIVE
-- water_production_cost: Cost for water disposal/handling ($/bbl) - NEGATIVE
-- water_injection_cost: Cost for water injection ($/bbl) - NEGATIVE
-- energy_production_kWh: Energy production rate (kWh/day) from producers
-- water_production_bbl: Water production rate (bbl/day) from producers
-- water_injection_bbl: Water injection rate (bbl/day) to injectors
-- scale_factor: Numerical scaling factor
+<b>Step 2: Convert BTU to kWh</b>
+  Energy_kWh = Energy_electrical_BTU × 0.000293071
+
+<b>Step 3: Convert daily rates to annual (each timestep = 1 year)</b>
+  Energy_kWh_year = Energy_kWh_day × 365
+  Water_prod_year = Water_prod_day × 365
+  Water_inj_year  = Water_inj_day × 365
+
+<b>Step 4: Calculate annual economics</b>
+  Reward = (energy_revenue × Energy_kWh_year
+          - water_prod_cost × Water_prod_year
+          - water_inj_cost × Water_inj_year) / scale_factor
+
+<b>Default values:</b>
+  • thermal_to_electrical_efficiency: 0.1 (10% power plant efficiency)
+  • energy_revenue: $0.0011/kWh
+  • water_prod_cost: $5/bbl (disposal)
+  • water_inj_cost: $10/bbl (pumping)
             </pre>
             </div>
             """)
@@ -4512,11 +4598,13 @@ def get_reward_function_params(rl_config):
     
     # Default values for geothermal project
     defaults = {
-        'energy_production_revenue': 0.11,  # Revenue from energy production ($/kWh) - POSITIVE
-        'water_production_cost': 5.0,       # Cost for water production disposal ($/bbl) - NEGATIVE
-        'water_injection_cost': 10.0,       # Cost for water injection ($/bbl) - NEGATIVE
-        'btu_to_kwh': 0.000293071,          # BTU to kWh conversion factor
-        'scale_factor': 1000000.0           # Final scaling factor for reward normalization
+        'energy_production_revenue': 0.0011,  # Revenue from energy production ($/kWh electrical) - POSITIVE
+        'water_production_cost': 5.0,         # Cost for water production disposal ($/bbl) - NEGATIVE
+        'water_injection_cost': 10.0,         # Cost for water injection ($/bbl) - NEGATIVE
+        'btu_to_kwh': 0.000293071,            # BTU to kWh conversion factor
+        'days_per_year': 365,                 # Days per year (each RL timestep = 1 year)
+        'thermal_to_electrical_efficiency': 0.1,  # Thermal BTU to electrical BTU efficiency (~10%)
+        'scale_factor': 1000000.0             # Final scaling factor for reward normalization
     }
     
     # Merge with user configuration
@@ -4598,6 +4686,30 @@ def update_config_with_dashboard(config, rl_config):
     # Update economic parameters
     economic_params = rl_config.get('economic_params', {})
     if economic_params:
+        # Geothermal project parameters (primary)
+        if 'energy_production_revenue' in economic_params:
+            config.rl_model['economics']['prices']['energy_production_revenue'] = economic_params['energy_production_revenue']
+        
+        if 'water_production_cost' in economic_params:
+            config.rl_model['economics']['prices']['water_production_cost'] = economic_params['water_production_cost']
+        
+        if 'water_injection_cost' in economic_params:
+            config.rl_model['economics']['prices']['water_injection_cost'] = economic_params['water_injection_cost']
+        
+        # Conversion factors
+        if 'thermal_to_electrical_efficiency' in economic_params:
+            config.rl_model['economics']['conversion']['thermal_to_electrical_efficiency'] = economic_params['thermal_to_electrical_efficiency']
+        
+        if 'days_per_year' in economic_params:
+            config.rl_model['economics']['conversion']['days_per_year'] = economic_params['days_per_year']
+        
+        if 'btu_to_kwh' in economic_params:
+            config.rl_model['economics']['conversion']['btu_to_kwh'] = economic_params['btu_to_kwh']
+        
+        if 'scale_factor' in economic_params:
+            config.rl_model['economics']['scale_factor'] = economic_params['scale_factor']
+        
+        # Legacy parameters (kept for backward compatibility)
         if 'gas_injection_revenue' in economic_params:
             config.rl_model['economics']['prices']['gas_injection_revenue'] = economic_params['gas_injection_revenue']
         
@@ -4615,9 +4727,6 @@ def update_config_with_dashboard(config, rl_config):
             total_conversion = economic_params['lf3_to_ton_conversion']
             config.rl_model['economics']['conversion']['lf3_to_intermediate'] = 0.1167
             config.rl_model['economics']['conversion']['intermediate_to_ton'] = total_conversion / 0.1167
-        
-        if 'scale_factor' in economic_params:
-            config.rl_model['economics']['scale_factor'] = economic_params['scale_factor']
     
     # Update RL hyperparameters
     rl_hyperparams = rl_config.get('rl_hyperparams', {})

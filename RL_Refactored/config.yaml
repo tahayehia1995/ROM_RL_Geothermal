@@ -156,6 +156,8 @@ rl_model:
     # Unit conversion factors
     conversion:
       btu_to_kwh: 0.000293071           # BTU to kWh conversion: 1 BTU = 0.000293071 kWh
+      days_per_year: 365                # Days per year (each RL timestep = 1 year)
+      thermal_to_electrical_efficiency: 0.1  # Geothermal plant efficiency: thermal BTU → electrical BTU (~10%)
       # Legacy conversions (kept for backward compatibility)
       lf3_to_intermediate: 0.1167       # First conversion factor (cubic feet to intermediate unit)
       intermediate_to_ton: 4.536e-4     # Second conversion factor (intermediate to tons)
@@ -163,7 +165,7 @@ rl_model:
       
     # Economic values ($/unit) - Geothermal Project
     prices:
-      energy_production_revenue: 0.11   # Revenue from energy production ($/kWh) - POSITIVE
+      energy_production_revenue: 0.0011 # Revenue from energy production ($/kWh electrical) - POSITIVE
       water_production_cost: 5.0        # Cost for water production disposal/handling ($/bbl) - NEGATIVE
       water_injection_cost: 10.0        # Cost for water injection pumping/treatment ($/bbl) - NEGATIVE
       # Legacy parameters (kept for backward compatibility)
