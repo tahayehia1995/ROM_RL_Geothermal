@@ -2640,35 +2640,9 @@ class RLConfigurationDashboard:
             obs_order = detection_details.get('observation_order', [])
         
         
-        # Combine all variables from both controls and observations for display
-        # This allows user to select any variable as control or observation
-        # IMPORTANT: For variables that exist in both, we need to preserve both versions
-        # because controls and observations can have different indices/well_names
-        all_vars = {}
-        # First add observations (they have more complete info like group_name)
-        all_vars.update(obs_vars)
-        # Then add/update with controls (to get control-specific indices and well_names)
-        # But preserve observation fields that don't exist in controls
-        for var_name, var_config in control_vars.items():
-            if var_name in all_vars:
-                # Merge: use control config but preserve observation-specific fields
-                merged_config = all_vars[var_name].copy()
-                merged_config.update(var_config)
-                # For controls display, prioritize control indices and well_names
-                merged_config['control_indices'] = var_config.get('indices', [])
-                merged_config['control_well_names'] = var_config.get('well_names', [])
-                # Keep observation indices/well_names for observation display
-                merged_config['observation_indices'] = all_vars[var_name].get('indices', [])
-                merged_config['observation_well_names'] = all_vars[var_name].get('well_names', [])
-                all_vars[var_name] = merged_config
-            else:
-                all_vars[var_name] = var_config.copy()
-        
-        # Create combined order (controls first, then observations not in controls)
-        combined_order = list(control_order)
-        for var_name in obs_order:
-            if var_name not in combined_order:
-                combined_order.append(var_name)
+        # IMPORTANT: For "Select Control Variables" section, ONLY show control variables
+        # NOT observation variables - they should be in a separate section
+        # The ROM config defines exactly which variables are controls vs observations
         
         # Initialize selections if not already done
         if not hasattr(self, 'control_selections') or not self.control_selections:
@@ -2676,47 +2650,50 @@ class RLConfigurationDashboard:
             self.observation_selections = {}
             self.variable_range_widgets = {}
         
-        # Controls Selection Section
+        # Controls Selection Section - ONLY show control_vars (not obs_vars)
         action_widgets.append(widgets.HTML("<hr style='margin: 20px 0;'>"))
         action_widgets.append(widgets.HTML("<h4>🎮 Select Control Variables</h4>"))
-        action_widgets.append(widgets.HTML("<p><i>Select which variables will be used as controls (actions) for the RL agent. Variables are shown from ROM config:</i></p>"))
+        action_widgets.append(widgets.HTML("<p><i>Select which variables will be used as controls (actions) for the RL agent. <b>Only control variables from ROM config are shown:</b></i></p>"))
         
-        # Show all variables (from both controls and observations) so user can select what they want
-        # But default selection based on ROM config controls
-        if not all_vars:
-            action_widgets.append(widgets.HTML("<p style='color: #ff9800;'><i>⚠️ No variables found in ROM config. Please ensure ROM_Refactored/config.yaml has controls/observations defined.</i></p>"))
+        # Show ONLY control variables (not observations)
+        if not control_vars:
+            action_widgets.append(widgets.HTML("<p style='color: #ff9800;'><i>⚠️ No control variables found in ROM config. Please ensure ROM_Refactored/config.yaml has controls defined.</i></p>"))
         else:
-            # Show variables grouped by well type for clarity
-            # First show variables for producers, then injectors
-            producer_vars = []
-            injector_vars = []
-            other_vars = []
+            # Show control variables grouped by well type for clarity
+            # Group controls by their well_type
+            producer_control_vars = []
+            injector_control_vars = []
+            other_control_vars = []
             
-            for var_name in combined_order:
-                if var_name not in all_vars:
+            for var_name in control_order:
+                if var_name not in control_vars:
                     continue
-                var_config = all_vars[var_name]
+                var_config = control_vars[var_name]
                 well_type = var_config.get('well_type', 'unknown')
                 if well_type == 'producers':
-                    producer_vars.append(var_name)
+                    producer_control_vars.append(var_name)
                 elif well_type == 'injectors':
-                    injector_vars.append(var_name)
+                    injector_control_vars.append(var_name)
                 else:
-                    other_vars.append(var_name)
+                    other_control_vars.append(var_name)
             
-            # Show producer variables first
+            # Rename for consistency with existing code below
+            producer_vars = producer_control_vars
+            injector_vars = injector_control_vars
+            other_vars = other_control_vars
+            
+            # Show producer control variables first (e.g., BHP for producers)
             if producer_vars:
-                action_widgets.append(widgets.HTML("<p style='font-weight: bold; margin-top: 10px; color: #1976d2;'>📊 Producer Variables:</p>"))
+                action_widgets.append(widgets.HTML("<p style='font-weight: bold; margin-top: 10px; color: #1976d2;'>📊 Producer Controls:</p>"))
                 for var_name in producer_vars:
-                    if var_name not in all_vars:
+                    if var_name not in control_vars:
                         continue
                     
-                    var_config = all_vars[var_name]
+                    var_config = control_vars[var_name]
                     display_name = var_config.get('display_name', var_name)
                     well_type = var_config.get('well_type', 'unknown')
                     
-                    # For controls display, ALWAYS use control-specific well_names and indices
-                    # If variable exists in controls, use control definition directly
+                    # Use control definition directly - this is the source of truth
                     if var_name in control_vars:
                         # Use control definition for controls display - this is the source of truth
                         control_var_config = control_vars[var_name]
@@ -2830,19 +2807,18 @@ class RLConfigurationDashboard:
                     if checkbox.value:
                         action_widgets.append(range_container)
             
-            # Show injector variables
+            # Show injector control variables (e.g., WATRATRC for water injection)
             if injector_vars:
-                action_widgets.append(widgets.HTML("<p style='font-weight: bold; margin-top: 15px; color: #d32f2f;'>💧 Injector Variables:</p>"))
+                action_widgets.append(widgets.HTML("<p style='font-weight: bold; margin-top: 15px; color: #d32f2f;'>💧 Injector Controls:</p>"))
                 for var_name in injector_vars:
-                    if var_name not in all_vars:
+                    if var_name not in control_vars:
                         continue
                     
-                    var_config = all_vars[var_name]
+                    var_config = control_vars[var_name]
                     display_name = var_config.get('display_name', var_name)
                     well_type = var_config.get('well_type', 'unknown')
                     
-                    # For controls display, ALWAYS use control-specific well_names and indices
-                    # If variable exists in controls, use control definition directly
+                    # Use control definition directly - this is the source of truth
                     if var_name in control_vars:
                         # Use control definition for controls display - this is the source of truth
                         control_var_config = control_vars[var_name]
